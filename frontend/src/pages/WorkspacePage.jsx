@@ -6,8 +6,8 @@ const GRADE_OPTIONS = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F"];
 const GRADE_SLOT_COUNT = 6;
 const ASSESSMENT_SLOT_COUNT = 3;
 const RISK_LEVEL_ORDER = { Low: 1, Moderate: 2, High: 3 };
-const GITHUB_REPO_URL = "https://github.com/AbhinavGGarg/Nudge";
-const GITHUB_ZIP_URL = "https://github.com/AbhinavGGarg/Nudge/archive/refs/heads/main.zip";
+const GITHUB_REPO_URL = "https://github.com/AbhinavGGarg/Tether";
+const GITHUB_ZIP_URL = "https://github.com/AbhinavGGarg/Tether/archive/refs/heads/main.zip";
 const REMINDER_DELAYS_MS = [0, 3 * 60 * 1000, 8 * 60 * 1000];
 const NOTIFICATION_MODE_CONFIG = {
   Normal: { inactivityMs: 90000, lostFocusMs: 120000 },
