@@ -76,6 +76,8 @@ function boot() {
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("input", onInput, true);
   document.addEventListener("scroll", onScroll, true);
+  document.addEventListener("wheel", onWheel, { capture: true, passive: true });
+  document.addEventListener("touchmove", onTouchMove, { capture: true, passive: true });
   document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("visibilitychange", onVisibilityChange, true);
 
@@ -104,6 +106,9 @@ function boot() {
 }
 
 function onKeyDown(event) {
+  if (!event.isTrusted) {
+    return;
+  }
   if (isSensitiveTarget(event.target)) {
     return;
   }
@@ -131,7 +136,13 @@ function onKeyDown(event) {
 }
 
 function onInput(event) {
+  if (!event.isTrusted) {
+    return;
+  }
   if (isSensitiveTarget(event.target)) {
+    return;
+  }
+  if (!isTrackableInputTarget(event.target)) {
     return;
   }
 
@@ -157,7 +168,20 @@ function onScroll() {
 
   scrollEvents.push({ ts: now, delta });
   scrollDistanceDelta += delta;
-  lastInteractionAt = now;
+}
+
+function onWheel(event) {
+  if (!event.isTrusted) {
+    return;
+  }
+  lastInteractionAt = Date.now();
+}
+
+function onTouchMove(event) {
+  if (!event.isTrusted) {
+    return;
+  }
+  lastInteractionAt = Date.now();
 }
 
 function onPointerDown() {
@@ -714,6 +738,13 @@ function isTextLikeInput(node) {
     return ["text", "search", "url", "email", "number"].includes(type);
   }
   return false;
+}
+
+function isTrackableInputTarget(node) {
+  if (!(node instanceof HTMLElement)) {
+    return false;
+  }
+  return isTextLikeInput(node) || node.isContentEditable;
 }
 
 function isSensitiveTarget(node) {

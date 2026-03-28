@@ -2,6 +2,7 @@ const tabSessions = new Map();
 
 const LIVE_RESULTS_URL = "https://nudge-frontend-ten.vercel.app";
 const STRICT_INACTIVITY_MS = 90 * 1000;
+const INACTIVITY_NOTIFICATION_COOLDOWN_MS = 90 * 1000;
 
 const SESSION_COOLDOWN_MS = {
   procrastination: 90000,
@@ -83,6 +84,14 @@ async function handleMetricsMessage(message, sender) {
     bumpIssueCounters(session, issue.type);
     addTimeline(session, "issue_detected", `${humanizeIssue(issue.type)} detected`, issue.reason);
 
+    if (issue.strategy === "inactivity_strict") {
+      maybeSendInactivityNotification(session, {
+        message: "You stopped working. Get back in for 2 minutes.",
+        label: "Reminder sent: Resume session",
+        details: "Inactivity reminder notification triggered."
+      });
+    }
+
     if (canEmitIntervention(session, issue)) {
       intervention = buildIntervention(issue, context, detection.diagnostics);
       session.interventions.unshift(intervention);
@@ -90,19 +99,6 @@ async function handleMetricsMessage(message, sender) {
       session.pendingIgnoredReminder = null;
 
       addTimeline(session, "intervention_triggered", intervention.title, intervention.what);
-
-      if (intervention.strategy === "inactivity_strict") {
-        dispatchBrowserNotification(
-          "Nudge Alert",
-          "You stopped working. Get back in for 2 minutes."
-        );
-        addTimeline(
-          session,
-          "reminder_sent",
-          "Reminder sent: Resume session",
-          "Inactivity reminder notification triggered."
-        );
-      }
 
       chrome.tabs
         .sendMessage(tabId, {
@@ -275,7 +271,8 @@ function ensureSession(tabId, url, title) {
       totalKeystrokes: 0
     },
     pendingIgnoredReminder: null,
-    inactivityReminderStopped: false
+    inactivityReminderStopped: false,
+    lastInactivityNotificationAt: 0
   };
 
   addTimeline(session, "session_started", "Live monitoring started", domainFromUrl(url));
@@ -438,10 +435,7 @@ function detectIssue(session, metrics, context) {
 
   const inactivityStrict =
     metrics.pauseDurationMs >= STRICT_INACTIVITY_MS &&
-    metrics.idleDurationMs >= STRICT_INACTIVITY_MS &&
-    metrics.keystrokesDelta === 0 &&
-    metrics.scrollDistance === 0 &&
-    metrics.tabSwitchesDelta === 0;
+    metrics.idleDurationMs >= STRICT_INACTIVITY_MS;
 
   if (inactivityStrict) {
     diagnostics.distractionScore = Math.max(diagnostics.distractionScore, 0.92);
@@ -779,6 +773,7 @@ async function persistState(tabId, session) {
       timeline: session.timeline,
       pendingIgnoredReminder: session.pendingIgnoredReminder,
       inactivityReminderStopped: session.inactivityReminderStopped,
+      lastInactivityNotificationAt: session.lastInactivityNotificationAt || 0,
       liveResultsUrl: LIVE_RESULTS_URL
     },
     nudge_last_tab: tabId,
@@ -892,13 +887,12 @@ function processIgnoredReminderFollowUp(session, metrics) {
     return;
   }
 
-  dispatchBrowserNotification("Nudge Alert", "You stopped working. Get back in for 2 minutes.");
-  addTimeline(
-    session,
-    "reminder_sent",
-    "Second reminder sent: Resume session",
-    "Inactivity was ignored for 3 minutes. This is the final reminder."
-  );
+  maybeSendInactivityNotification(session, {
+    message: "You stopped working. Get back in for 2 minutes.",
+    label: "Second reminder sent: Resume session",
+    details: "Inactivity was ignored for 3 minutes. This is the final reminder.",
+    force: true
+  });
 
   session.lastSignal = {
     ...(session.lastSignal || {}),
@@ -926,10 +920,24 @@ function dispatchBrowserNotification(title, message) {
       iconUrl: chrome.runtime.getURL("icons/nudge-128.png"),
       title,
       message,
-      priority: 2
+      priority: 2,
+      requireInteraction: true
     },
     () => {
       void chrome.runtime.lastError;
     }
   );
+}
+
+function maybeSendInactivityNotification(session, { message, label, details, force = false }) {
+  const now = Date.now();
+  const lastSent = Number(session.lastInactivityNotificationAt || 0);
+  if (!force && now - lastSent < INACTIVITY_NOTIFICATION_COOLDOWN_MS) {
+    return false;
+  }
+
+  dispatchBrowserNotification("Nudge Alert", message);
+  session.lastInactivityNotificationAt = now;
+  addTimeline(session, "reminder_sent", label, details);
+  return true;
 }
