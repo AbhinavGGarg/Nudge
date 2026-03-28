@@ -1,12 +1,24 @@
 import { v4 as uuidv4 } from "uuid";
-import { getProblemById, getPrerequisiteGaps } from "./knowledgeGraph.js";
+
+const ISSUE_COOLDOWN_MS = {
+  confusion: 120000,
+  distraction: 90000,
+  inefficiency: 150000
+};
+
+const ACTION_SNOOZE_MS = {
+  show_fix: 60000,
+  give_hint: 60000,
+  refocus: 180000,
+  summarize: 120000
+};
 
 class SessionStore {
   constructor() {
     this.sessions = new Map();
   }
 
-  createSession(learnerName = "Demo Student") {
+  createSession(learnerName = "Operator") {
     const id = uuidv4();
     const session = {
       id,
@@ -14,35 +26,39 @@ class SessionStore {
       startedAt: Date.now(),
       endedAt: null,
       metricsHistory: [],
-      attempts: [],
       interventions: [],
-      masteryByConcept: {
-        variables: 0.7,
-        functions: 0.66,
-        loops: 0.58,
-        conditionals: 0.62,
-        arrays: 0.68,
-        recursion: 0.4
-      },
-      conceptStats: {},
-      currentProblemId: "loop-even-sum",
-      currentConcept: "loops",
-      aggregate: {
-        totalKeystrokes: 0,
-        totalPauseMs: 0,
-        longPauseCount: 0,
-        repeatedEditBursts: 0,
-        timeOnTaskMs: 0,
-        unproductiveTimeMs: 0
-      },
+      timeline: [],
+      contextsSeen: {},
       issueCounters: {
         confusion: 0,
-        knowledge_gap: 0,
+        distraction: 0,
         inefficiency: 0
       },
-      lastInterventionByType: {}
+      aggregate: {
+        totalKeystrokes: 0,
+        totalTabSwitches: 0,
+        totalScrollDistance: 0,
+        totalIdleMs: 0,
+        repeatedActionBursts: 0,
+        timeOnTaskMs: 0,
+        totalDetections: 0
+      },
+      lastInterventionByType: {},
+      snoozedByType: {},
+      lastSignal: emptySignal(),
+      lastContext: emptyContext(),
+      lastMetrics: {
+        typingSpeed: 0,
+        pauseDurationMs: 0,
+        idleDurationMs: 0,
+        repeatedActions: 0,
+        scrollSpeed: 0,
+        tabSwitchesDelta: 0,
+        totalKeystrokes: 0
+      }
     };
 
+    addTimeline(session, "session_started", "Live monitoring started", "DecisionOS session initialized");
     this.sessions.set(id, session);
     return session;
   }
@@ -51,94 +67,57 @@ class SessionStore {
     return this.sessions.get(sessionId) || null;
   }
 
-  setCurrentProblem(sessionId, problemId) {
+  ingestMetrics(sessionId, metrics, context) {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    session.metricsHistory.push({ ts: Date.now(), ...metrics, context });
+
+    session.lastContext = context;
+    session.contextsSeen[context.category] = (session.contextsSeen[context.category] || 0) + 1;
+
+    session.aggregate.totalKeystrokes += metrics.keystrokesDelta;
+    session.aggregate.totalTabSwitches += metrics.tabSwitchesDelta;
+    session.aggregate.totalScrollDistance += metrics.scrollDistance;
+    session.aggregate.totalIdleMs += metrics.idleDurationMs;
+    session.aggregate.timeOnTaskMs = Math.max(session.aggregate.timeOnTaskMs, metrics.timeOnTaskMs);
+
+    if (metrics.repeatedActions >= 5) {
+      session.aggregate.repeatedActionBursts += 1;
+    }
+
+    session.lastMetrics = {
+      typingSpeed: metrics.typingSpeed,
+      pauseDurationMs: metrics.pauseDurationMs,
+      idleDurationMs: metrics.idleDurationMs,
+      repeatedActions: metrics.repeatedActions,
+      scrollSpeed: metrics.scrollSpeed,
+      tabSwitchesDelta: metrics.tabSwitchesDelta,
+      totalKeystrokes: session.aggregate.totalKeystrokes
+    };
+
+    return session;
+  }
+
+  setSignal(sessionId, signal) {
     const session = this.getSession(sessionId);
     if (!session) {
       return;
     }
-    const problem = getProblemById(problemId);
-    session.currentProblemId = problemId;
-    session.currentConcept = problem?.concepts[0] || "functions";
+    session.lastSignal = signal;
   }
 
-  addMetrics(sessionId, metrics) {
-    const session = this.getSession(sessionId);
-    if (!session) {
-      return null;
-    }
-
-    session.metricsHistory.push({ ts: Date.now(), ...metrics });
-
-    session.aggregate.totalKeystrokes += metrics.keystrokesDelta || 0;
-    session.aggregate.totalPauseMs += metrics.pauseDurationMs || 0;
-    session.aggregate.timeOnTaskMs = Math.max(session.aggregate.timeOnTaskMs, metrics.timeOnProblemMs || 0);
-
-    if ((metrics.pauseDurationMs || 0) > 10000) {
-      session.aggregate.longPauseCount += 1;
-      session.aggregate.unproductiveTimeMs += metrics.pauseDurationMs;
-    }
-
-    if ((metrics.repeatedEdits || 0) >= 6) {
-      session.aggregate.repeatedEditBursts += 1;
-      session.aggregate.unproductiveTimeMs += 4000;
-    }
-
-    this.setCurrentProblem(sessionId, metrics.problemId);
-
-    return session;
-  }
-
-  addAttempt(sessionId, attempt) {
-    const session = this.getSession(sessionId);
-    if (!session) {
-      return null;
-    }
-
-    session.attempts.push({ ts: Date.now(), ...attempt });
-
-    const problem = getProblemById(attempt.problemId);
-    const concepts = problem?.concepts || [session.currentConcept];
-
-    concepts.forEach((concept) => {
-      if (!session.conceptStats[concept]) {
-        session.conceptStats[concept] = { incorrect: 0, correct: 0, confusionSignals: 0, inefficiencyFlags: 0 };
-      }
-
-      if (attempt.isCorrect) {
-        session.conceptStats[concept].correct += 1;
-        session.masteryByConcept[concept] = Math.min(0.98, (session.masteryByConcept[concept] || 0.5) + 0.08);
-      } else {
-        session.conceptStats[concept].incorrect += 1;
-        session.masteryByConcept[concept] = Math.max(0.2, (session.masteryByConcept[concept] || 0.5) - 0.06);
-      }
-
-      if (attempt.inefficient) {
-        session.conceptStats[concept].inefficiencyFlags += 1;
-      }
-    });
-
-    return session;
-  }
-
-  trackIssue(sessionId, issue) {
+  recordIssue(sessionId, issue) {
     const session = this.getSession(sessionId);
     if (!session) {
       return;
     }
 
     session.issueCounters[issue.type] = (session.issueCounters[issue.type] || 0) + 1;
-
-    if (!session.conceptStats[issue.concept]) {
-      session.conceptStats[issue.concept] = { incorrect: 0, correct: 0, confusionSignals: 0, inefficiencyFlags: 0 };
-    }
-
-    if (issue.type === "confusion" || issue.type === "knowledge_gap") {
-      session.conceptStats[issue.concept].confusionSignals += 1;
-    }
-
-    if (issue.type === "inefficiency") {
-      session.conceptStats[issue.concept].inefficiencyFlags += 1;
-    }
+    session.aggregate.totalDetections += 1;
+    addTimeline(session, "issue_detected", `${capitalize(issue.type)} detected`, issue.reason);
   }
 
   canEmitIntervention(sessionId, issueType) {
@@ -148,14 +127,20 @@ class SessionStore {
     }
 
     const now = Date.now();
-    const cooldownByType = {
-      confusion: 18000,
-      knowledge_gap: 14000,
-      inefficiency: 22000
-    };
+
+    if ((session.snoozedByType[issueType] || 0) > now) {
+      return false;
+    }
+
+    const unresolved = session.interventions.some(
+      (entry) => !entry.userAction && now - entry.ts < 4 * 60 * 1000
+    );
+    if (unresolved) {
+      return false;
+    }
 
     const lastTs = session.lastInterventionByType[issueType] || 0;
-    if (now - lastTs < (cooldownByType[issueType] || 15000)) {
+    if (now - lastTs < (ISSUE_COOLDOWN_MS[issueType] || 90000)) {
       return false;
     }
 
@@ -166,31 +151,56 @@ class SessionStore {
   addIntervention(sessionId, intervention) {
     const session = this.getSession(sessionId);
     if (!session) {
-      return;
+      return null;
     }
 
-    session.interventions.push({
+    const entry = {
       id: uuidv4(),
       ts: Date.now(),
       applied: false,
+      userAction: null,
       ...intervention
-    });
+    };
+
+    session.interventions.unshift(entry);
+    session.interventions = session.interventions.slice(0, 20);
+
+    addTimeline(session, "intervention_triggered", entry.title, entry.message);
+    return entry;
   }
 
-  markInterventionApplied(sessionId, interventionId) {
+  markInterventionAction(sessionId, interventionId, rawAction) {
     const session = this.getSession(sessionId);
     if (!session) {
-      return;
+      return null;
     }
 
+    const action = normalizeAction(rawAction);
     const target = session.interventions.find((entry) => entry.id === interventionId);
-    if (target) {
-      target.applied = true;
-      const boostConcept = target.concept;
-      if (boostConcept) {
-        session.masteryByConcept[boostConcept] = Math.min(0.99, (session.masteryByConcept[boostConcept] || 0.5) + 0.04);
-      }
+
+    if (!target) {
+      return null;
     }
+
+    target.userAction = action;
+    target.respondedAt = Date.now();
+    target.applied = action === "refocus";
+
+    if (action === "summarize") {
+      target.generatedSummary = `Summary: ${target.message} Next step: ${target.nextAction}`;
+    }
+
+    if (action === "refocus") {
+      simulateImprovement(session);
+    }
+
+    if (ACTION_SNOOZE_MS[action] && target.type) {
+      session.snoozedByType[target.type] = Date.now() + ACTION_SNOOZE_MS[action];
+    }
+
+    addTimeline(session, "user_action", `User selected ${actionLabel(action)}`, target.title);
+
+    return target;
   }
 
   endSession(sessionId) {
@@ -198,7 +208,11 @@ class SessionStore {
     if (!session) {
       return;
     }
-    session.endedAt = Date.now();
+
+    if (!session.endedAt) {
+      session.endedAt = Date.now();
+      addTimeline(session, "session_ended", "Session ended", "Dashboard generated");
+    }
   }
 
   getSummary(sessionId) {
@@ -208,36 +222,21 @@ class SessionStore {
     }
 
     const endedAt = session.endedAt || Date.now();
-    const sessionLengthMs = endedAt - session.startedAt;
+    const durationMs = endedAt - session.startedAt;
+
     const timeWastedMs = Math.min(
-      sessionLengthMs,
-      session.aggregate.unproductiveTimeMs + session.aggregate.repeatedEditBursts * 2500
+      durationMs,
+      session.aggregate.totalIdleMs + session.aggregate.repeatedActionBursts * 4000
     );
 
-    const struggledConcepts = Object.entries(session.conceptStats)
-      .map(([concept, stats]) => ({
-        concept,
-        struggleScore: stats.incorrect * 2 + stats.confusionSignals * 1.4 + stats.inefficiencyFlags,
-        incorrectAttempts: stats.incorrect,
-        confusionSignals: stats.confusionSignals,
-        inefficiencyFlags: stats.inefficiencyFlags,
-        mastery: Number((session.masteryByConcept[concept] || 0.5).toFixed(2))
-      }))
-      .sort((a, b) => b.struggleScore - a.struggleScore)
+    const contextBreakdown = Object.entries(session.contextsSeen)
+      .map(([context, count]) => ({ context, count }))
+      .sort((a, b) => b.count - a.count)
       .slice(0, 6);
 
-    const topConcept = struggledConcepts[0]?.concept || "loops";
-    const prerequisiteGaps = getPrerequisiteGaps(topConcept, session.masteryByConcept)
-      .concat(getPrerequisiteGaps("recursion", session.masteryByConcept))
-      .filter((item, idx, list) => {
-        const key = `${item.concept}-${item.missingPrerequisite}`;
-        return list.findIndex((entry) => `${entry.concept}-${entry.missingPrerequisite}` === key) === idx;
-      })
-      .slice(0, 6);
-
-    const resolvedInterventions = session.interventions.filter((entry) => entry.applied).length;
+    const resolvedCount = session.interventions.filter((entry) => entry.userAction === "refocus").length;
     const interventionEffectiveness = session.interventions.length
-      ? Number((resolvedInterventions / session.interventions.length).toFixed(2))
+      ? Number((resolvedCount / session.interventions.length).toFixed(2))
       : 0;
 
     return {
@@ -245,37 +244,149 @@ class SessionStore {
       learnerName: session.learnerName,
       startedAt: session.startedAt,
       endedAt,
-      durationMs: sessionLengthMs,
+      durationMs,
       timeWastedMs,
       issueCounters: session.issueCounters,
-      struggledConcepts,
-      prerequisiteGaps,
-      masteryByConcept: Object.entries(session.masteryByConcept).map(([concept, mastery]) => ({
-        concept,
-        mastery: Number(mastery.toFixed(2))
-      })),
+      contextBreakdown,
       interventions: session.interventions,
+      timeline: session.timeline,
       interventionEffectiveness,
-      improvementSuggestions: buildImprovementSuggestions(struggledConcepts, prerequisiteGaps)
+      behaviorSnapshot: computeBehaviorSnapshot(session),
+      improvementSuggestions: buildImprovementSuggestions(session, contextBreakdown)
     };
   }
 }
 
-function buildImprovementSuggestions(struggledConcepts, prerequisiteGaps) {
+function computeBehaviorSnapshot(session) {
+  const avgIdleMs = session.metricsHistory.length
+    ? session.metricsHistory.reduce((sum, entry) => sum + (entry.idleDurationMs || 0), 0) / session.metricsHistory.length
+    : 0;
+
+  const focusScore = Math.max(
+    0,
+    100 - Math.min(80, avgIdleMs / 600 + session.aggregate.totalTabSwitches * 2 + session.issueCounters.distraction * 4)
+  );
+
+  const momentumScore = Math.max(
+    0,
+    100 - Math.min(75, session.issueCounters.inefficiency * 6 + session.aggregate.repeatedActionBursts * 3)
+  );
+
+  const clarityScore = Math.max(
+    0,
+    100 - Math.min(75, session.issueCounters.confusion * 7 + session.issueCounters.distraction * 2)
+  );
+
+  return {
+    focusScore: Math.round(focusScore),
+    momentumScore: Math.round(momentumScore),
+    clarityScore: Math.round(clarityScore)
+  };
+}
+
+function buildImprovementSuggestions(session, contextBreakdown) {
   const suggestions = [];
+  const topContext = contextBreakdown[0]?.context;
 
-  if (struggledConcepts[0]) {
-    suggestions.push(`Run a 5-minute focused drill on ${struggledConcepts[0].concept} before the next problem set.`);
+  if (topContext) {
+    suggestions.push(`Primary context: ${topContext}. Set one objective before each work block.`);
   }
 
-  if (prerequisiteGaps[0]) {
-    suggestions.push(
-      `Patch prerequisite gap: revisit ${prerequisiteGaps[0].missingPrerequisite} before retrying ${prerequisiteGaps[0].concept}.`
-    );
+  if ((session.issueCounters.distraction || 0) > 0) {
+    suggestions.push("Use 90-second single-task focus sprints when drift appears.");
   }
 
-  suggestions.push("Use short checkpoints every 90 seconds: state your plan before writing more code.");
-  return suggestions.slice(0, 3);
+  if ((session.issueCounters.confusion || 0) > 0) {
+    suggestions.push("When stuck, summarize what you know and what is missing in one sentence.");
+  }
+
+  if ((session.issueCounters.inefficiency || 0) > 0) {
+    suggestions.push("Switch from reactive edits to a 3-step micro-plan before acting.");
+  }
+
+  if (suggestions.length === 0) {
+    suggestions.push("Strong session. Keep using short checkpoints to preserve momentum.");
+  }
+
+  return suggestions.slice(0, 4);
+}
+
+function simulateImprovement(session) {
+  session.lastSignal = {
+    ...session.lastSignal,
+    issueType: null,
+    issueSeverity: null,
+    confusionScore: Number(Math.max(0, (session.lastSignal.confusionScore || 0) - 0.25).toFixed(2)),
+    distractionScore: Number(Math.max(0, (session.lastSignal.distractionScore || 0) - 0.25).toFixed(2)),
+    inefficiencyScore: Number(Math.max(0, (session.lastSignal.inefficiencyScore || 0) - 0.25).toFixed(2))
+  };
+}
+
+function addTimeline(session, eventType, label, details) {
+  session.timeline.unshift({
+    id: uuidv4(),
+    ts: Date.now(),
+    eventType,
+    label,
+    details
+  });
+
+  session.timeline = session.timeline.slice(0, 60);
+}
+
+function emptySignal() {
+  return {
+    issueType: null,
+    issueSeverity: null,
+    confusionScore: 0,
+    distractionScore: 0,
+    inefficiencyScore: 0
+  };
+}
+
+function emptyContext() {
+  return {
+    domain: "unknown",
+    url: "",
+    pageTitle: "",
+    category: "consuming_content",
+    activityType: "reading",
+    confidence: 0.4,
+    evidence: []
+  };
+}
+
+function normalizeAction(action) {
+  const mapping = {
+    show_suggestion: "show_fix",
+    try_action: "refocus",
+    ignore: "summarize"
+  };
+
+  const resolved = mapping[action] || action;
+  if (["show_fix", "give_hint", "refocus", "summarize"].includes(resolved)) {
+    return resolved;
+  }
+
+  return "refocus";
+}
+
+function actionLabel(action) {
+  const labels = {
+    show_fix: "Show Fix",
+    give_hint: "Give Hint",
+    refocus: "Refocus",
+    summarize: "Summarize"
+  };
+
+  return labels[action] || "Refocus";
+}
+
+function capitalize(value) {
+  if (!value) {
+    return "";
+  }
+  return `${value[0].toUpperCase()}${value.slice(1)}`;
 }
 
 export { SessionStore };

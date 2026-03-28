@@ -15,6 +15,7 @@ import {
 import { fetchSummary } from "../lib/api";
 
 const ISSUE_COLORS = ["#f97316", "#0ea5e9", "#f43f5e"];
+const CONTEXT_COLOR = "#06b6d4";
 
 function DashboardPage() {
   const { sessionId } = useParams();
@@ -83,8 +84,8 @@ function DashboardPage() {
     <main className="page-shell">
       <header className="topbar">
         <div>
-          <h1>Nudge Dashboard</h1>
-          <p>Session intelligence report for {summary.learnerName}</p>
+          <h1>DecisionOS Report</h1>
+          <p>Context behavior analytics for {summary.learnerName}</p>
         </div>
         <Link to="/" className="btn btn-primary">
           Start New Session
@@ -93,27 +94,19 @@ function DashboardPage() {
 
       <section className="dashboard-cards">
         <Card title="Session Duration" value={formatDuration(summary.durationMs)} />
-        <Card title="Time Wasted" value={formatDuration(summary.timeWastedMs)} />
+        <Card title="Estimated Time Waste" value={formatDuration(summary.timeWastedMs)} />
         <Card title="Interventions" value={summary.interventions.length} />
         <Card title="Intervention Effectiveness" value={`${Math.round(summary.interventionEffectiveness * 100)}%`} />
       </section>
 
-      <section className="dashboard-grid">
-        <article className="panel">
-          <h3>Mastery by Concept</h3>
-          <div className="chart-wrap">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={summary.masteryByConcept}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.22)" />
-                <XAxis dataKey="concept" tick={{ fill: "#1f2937", fontSize: 12 }} />
-                <YAxis tick={{ fill: "#1f2937", fontSize: 12 }} domain={[0, 1]} />
-                <Tooltip />
-                <Bar dataKey="mastery" fill="#0ea5e9" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </article>
+      <section className="dashboard-cards">
+        <Card title="Focus Score" value={`${summary.behaviorSnapshot?.focusScore || 0}%`} />
+        <Card title="Momentum Score" value={`${summary.behaviorSnapshot?.momentumScore || 0}%`} />
+        <Card title="Clarity Score" value={`${summary.behaviorSnapshot?.clarityScore || 0}%`} />
+        <Card title="Dominant Context" value={summary.contextBreakdown?.[0]?.context || "n/a"} />
+      </section>
 
+      <section className="dashboard-grid">
         <article className="panel">
           <h3>Issue Distribution</h3>
           <div className="chart-wrap">
@@ -131,30 +124,44 @@ function DashboardPage() {
         </article>
 
         <article className="panel">
-          <h3>Top Struggled Concepts</h3>
+          <h3>Context Breakdown</h3>
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={summary.contextBreakdown || []}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.22)" />
+                <XAxis dataKey="context" tick={{ fill: "#1f2937", fontSize: 12 }} />
+                <YAxis tick={{ fill: "#1f2937", fontSize: 12 }} />
+                <Tooltip />
+                <Bar dataKey="count" fill={CONTEXT_COLOR} radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </article>
+
+        <article className="panel">
+          <h3>Intervention Outcomes</h3>
           <div className="list-wrap">
-            {summary.struggledConcepts.length === 0 ? <p>No major struggles detected.</p> : null}
-            {summary.struggledConcepts.map((item) => (
-              <div className="list-item" key={item.concept}>
-                <strong>{item.concept}</strong>
-                <span>Struggle score: {item.struggleScore.toFixed(1)}</span>
-                <span>Incorrect attempts: {item.incorrectAttempts}</span>
-                <span>Mastery: {Math.round(item.mastery * 100)}%</span>
+            {summary.interventions.length === 0 ? <p>No interventions triggered.</p> : null}
+            {summary.interventions.slice(0, 8).map((item) => (
+              <div className="list-item" key={item.id}>
+                <strong>{item.title}</strong>
+                <span>{item.message}</span>
+                <span>Action: {item.userAction || "none"}</span>
+                <span>Severity: {item.severity}</span>
               </div>
             ))}
           </div>
         </article>
 
         <article className="panel">
-          <h3>Prerequisite Gaps</h3>
+          <h3>Decision Timeline</h3>
           <div className="list-wrap">
-            {summary.prerequisiteGaps.length === 0 ? <p>No prerequisite gaps identified.</p> : null}
-            {summary.prerequisiteGaps.map((gap) => (
-              <div className="list-item" key={`${gap.concept}-${gap.missingPrerequisite}`}>
-                <strong>
-                  {gap.concept} depends on {gap.missingPrerequisite}
-                </strong>
-                <span>Prerequisite mastery: {Math.round(gap.mastery * 100)}%</span>
+            {summary.timeline.length === 0 ? <p>No timeline events.</p> : null}
+            {summary.timeline.slice(0, 10).map((event) => (
+              <div className="list-item" key={event.id}>
+                <strong>{event.eventType}</strong>
+                <span>{event.label}</span>
+                <span>{new Date(event.ts).toLocaleTimeString()}</span>
               </div>
             ))}
           </div>

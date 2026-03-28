@@ -1,20 +1,55 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import FloatingAssistant from "../components/FloatingAssistant";
 import InterventionPopup from "../components/InterventionPopup";
-import {
-  endSession,
-  markInterventionApplied,
-  recordMetrics,
-  startSession
-} from "../lib/api";
+import { endSession, markInterventionApplied, recordMetrics, startSession } from "../lib/api";
 
-const DEFAULT_MASTERY = {
-  variables: 0.7,
-  functions: 0.66,
-  loops: 0.58,
-  conditionals: 0.62,
-  arrays: 0.68,
-  recursion: 0.4
+const SCENARIO_PRESETS = {
+  studying: {
+    label: "Studying",
+    title: "Neuroscience Lesson: Memory and Recall",
+    url: "https://learn.example.com/course/memory-and-recall",
+    pageText:
+      "This lesson covers active recall, spaced repetition, and memory consolidation. Practice by summarizing each section from memory.",
+    hasVideo: false,
+    hasEditable: false
+  },
+  coding: {
+    label: "Coding",
+    title: "Fix failing API pagination function",
+    url: "https://github.com/team/project/pull/142",
+    pageText:
+      "The function paginateResults currently returns duplicate values under high load. Investigate edge cases and async race conditions.",
+    hasVideo: false,
+    hasEditable: true
+  },
+  writing: {
+    label: "Writing",
+    title: "Quarterly Strategy Memo Draft",
+    url: "https://docs.google.com/document/d/decisionos-memo",
+    pageText:
+      "Draft a memo that explains strategic priorities, risks, and execution plan. Prioritize clarity and concise recommendations.",
+    hasVideo: false,
+    hasEditable: true
+  },
+  watching: {
+    label: "Watching",
+    title: "Productivity Workshop Recording",
+    url: "https://www.youtube.com/watch?v=decisionos-demo",
+    pageText:
+      "Video on focus systems and reducing context switching. Note key ideas and convert them into one immediate action.",
+    hasVideo: true,
+    hasEditable: false
+  },
+  browsing: {
+    label: "Browsing",
+    title: "Industry News Feed",
+    url: "https://news.example.com/technology-feed",
+    pageText:
+      "Multiple short posts and trend updates. Risk: passive scrolling without extracting decisions or next steps.",
+    hasVideo: false,
+    hasEditable: false
+  }
 };
 
 function WorkspacePage() {
@@ -26,27 +61,53 @@ function WorkspacePage() {
   const [connected, setConnected] = useState(false);
   const [startingSession, setStartingSession] = useState(false);
   const [startError, setStartError] = useState("");
-  const [signal, setSignal] = useState({ issueType: null, issueSeverity: null, confusionScore: 0 });
+
+  const [context, setContext] = useState({
+    domain: window.location.hostname,
+    category: "consuming_content",
+    activityType: "reading",
+    confidence: 0.4
+  });
+
+  const [signal, setSignal] = useState({
+    issueType: null,
+    issueSeverity: null,
+    confusionScore: 0,
+    distractionScore: 0,
+    inefficiencyScore: 0
+  });
+
   const [telemetry, setTelemetry] = useState({
     typingSpeed: 0,
+    idleDurationMs: 0,
     pauseDurationMs: 0,
-    repeatedEdits: 0,
+    repeatedActions: 0,
     deletionRate: 0,
-    complexityScore: 0,
-    timeOnProblemMs: 0,
+    scrollSpeed: 0,
+    tabSwitchesDelta: 0,
+    timeOnTaskMs: 0,
     totalKeystrokes: 0
   });
+
   const [activeIntervention, setActiveIntervention] = useState(null);
   const [interventionHistory, setInterventionHistory] = useState([]);
-  const [masteryMap, setMasteryMap] = useState(DEFAULT_MASTERY);
-  const dismissedIssueUntilRef = useRef({});
+  const [timeline, setTimeline] = useState([]);
+  const [impactNote, setImpactNote] = useState("No intervention impact yet.");
+  const [scenarioKey, setScenarioKey] = useState("studying");
 
   const sessionStartRef = useRef(Date.now());
   const lastInputRef = useRef(Date.now());
+  const lastInteractionRef = useRef(Date.now());
+
   const keyEventsRef = useRef([]);
   const editEventsRef = useRef([]);
-  const keystrokesSinceSendRef = useRef(0);
+  const scrollEventsRef = useRef([]);
+
+  const keystrokesDeltaRef = useRef(0);
   const totalKeystrokesRef = useRef(0);
+  const tabSwitchesDeltaRef = useRef(0);
+  const scrollDistanceDeltaRef = useRef(0);
+  const lastScrollYRef = useRef(window.scrollY || 0);
 
   async function handleCreateSession() {
     const cleanName = learnerDraft.trim();
@@ -62,15 +123,33 @@ function WorkspacePage() {
       const sessionResponse = await startSession(cleanName);
       setSessionId(sessionResponse.sessionId);
       setLearnerName(cleanName);
+      setConnected(true);
+
       sessionStartRef.current = Date.now();
       lastInputRef.current = Date.now();
+      lastInteractionRef.current = Date.now();
+
       keyEventsRef.current = [];
       editEventsRef.current = [];
-      keystrokesSinceSendRef.current = 0;
+      scrollEventsRef.current = [];
+      keystrokesDeltaRef.current = 0;
       totalKeystrokesRef.current = 0;
-      dismissedIssueUntilRef.current = {};
-      setConnected(true);
-    } catch (error) {
+      tabSwitchesDeltaRef.current = 0;
+      scrollDistanceDeltaRef.current = 0;
+      lastScrollYRef.current = window.scrollY || 0;
+
+      setSignal({
+        issueType: null,
+        issueSeverity: null,
+        confusionScore: 0,
+        distractionScore: 0,
+        inefficiencyScore: 0
+      });
+      setImpactNote("No intervention impact yet.");
+      setActiveIntervention(null);
+      setInterventionHistory([]);
+      setTimeline([]);
+    } catch {
       setStartError("Could not start session. Try again.");
     } finally {
       setStartingSession(false);
@@ -89,61 +168,78 @@ function WorkspacePage() {
 
       keyEventsRef.current = keyEventsRef.current.filter((ts) => ts >= tenSecondsAgo);
       editEventsRef.current = editEventsRef.current.filter((event) => event.ts >= twentySecondsAgo);
+      scrollEventsRef.current = scrollEventsRef.current.filter((event) => event.ts >= tenSecondsAgo);
 
-      const pauseDurationMs = now - lastInputRef.current;
       const repeatedEdits = editEventsRef.current.filter((event) => event.type === "delete").length;
       const insertCount = editEventsRef.current.filter((event) => event.type === "insert").length;
       const deleteCount = repeatedEdits;
-      const typingSpeed = Number((keyEventsRef.current.length / 10).toFixed(2));
-      const deletionRate = Number((deleteCount / Math.max(1, insertCount + deleteCount)).toFixed(2));
-      const complexityScore = 0;
-      const nestedLoopSignals = 0;
-      const timeOnProblemMs = now - sessionStartRef.current;
+      const scrollDistanceRecent = scrollEventsRef.current.reduce((sum, event) => sum + event.delta, 0);
+      const scrollBursts = scrollEventsRef.current.filter((event) => event.delta > 140).length;
 
       const metrics = {
-        problemId: "live-monitor",
-        typingSpeed,
-        pauseDurationMs,
+        typingSpeed: Number((keyEventsRef.current.length / 10).toFixed(2)),
+        pauseDurationMs: now - lastInputRef.current,
+        idleDurationMs: now - lastInteractionRef.current,
         repeatedEdits,
-        deletionRate,
-        complexityScore,
-        nestedLoopSignals,
-        timeOnProblemMs,
-        keystrokesDelta: keystrokesSinceSendRef.current
+        repeatedActions: repeatedEdits + Math.floor(scrollBursts / 2),
+        deletionRate: Number((deleteCount / Math.max(1, insertCount + deleteCount)).toFixed(2)),
+        scrollSpeed: Number((scrollDistanceRecent / 10).toFixed(2)),
+        scrollBursts,
+        scrollDistance: Math.round(scrollDistanceDeltaRef.current),
+        tabSwitchesDelta: tabSwitchesDeltaRef.current,
+        timeOnTaskMs: now - sessionStartRef.current,
+        keystrokesDelta: keystrokesDeltaRef.current,
+        pageTitle: SCENARIO_PRESETS[scenarioKey]?.title || document.title,
+        url: SCENARIO_PRESETS[scenarioKey]?.url || window.location.href,
+        contextSample: `${SCENARIO_PRESETS[scenarioKey]?.title || document.title}\n${(
+          SCENARIO_PRESETS[scenarioKey]?.pageText || ""
+        ).slice(0, 280)}`,
+        pageTextSample: SCENARIO_PRESETS[scenarioKey]?.pageText || extractPageTextSample(),
+        hasVideo: Boolean(SCENARIO_PRESETS[scenarioKey]?.hasVideo || document.querySelector("video")),
+        hasEditable: Boolean(SCENARIO_PRESETS[scenarioKey]?.hasEditable || hasEditableSurface())
       };
 
       const realtime = recordMetrics(sessionId, metrics);
+
       if (realtime?.signal) {
         setSignal(realtime.signal);
       }
+      if (realtime?.context) {
+        setContext(realtime.context);
+      }
+      if (realtime?.timeline) {
+        setTimeline(realtime.timeline);
+      }
+
       if (realtime?.intervention) {
-        const snoozeUntil = dismissedIssueUntilRef.current[realtime.intervention.type] || 0;
-        if (Date.now() >= snoozeUntil) {
-          setActiveIntervention(realtime.intervention);
-          setInterventionHistory((prev) => {
-            if (prev.some((item) => item.id === realtime.intervention.id)) {
-              return prev;
-            }
-            return [realtime.intervention, ...prev].slice(0, 6);
-          });
-        }
+        setActiveIntervention(realtime.intervention);
+        setInterventionHistory((prev) => {
+          if (prev.some((item) => item.id === realtime.intervention.id)) {
+            return prev;
+          }
+          return [realtime.intervention, ...prev].slice(0, 8);
+        });
       }
 
       setTelemetry({
-        typingSpeed,
-        pauseDurationMs,
-        repeatedEdits,
-        deletionRate,
-        complexityScore,
-        timeOnProblemMs,
+        typingSpeed: metrics.typingSpeed,
+        idleDurationMs: metrics.idleDurationMs,
+        pauseDurationMs: metrics.pauseDurationMs,
+        repeatedActions: metrics.repeatedActions,
+        deletionRate: metrics.deletionRate,
+        scrollSpeed: metrics.scrollSpeed,
+        tabSwitchesDelta: metrics.tabSwitchesDelta,
+        timeOnTaskMs: metrics.timeOnTaskMs,
         totalKeystrokes: totalKeystrokesRef.current
       });
 
-      keystrokesSinceSendRef.current = 0;
+      keystrokesDeltaRef.current = 0;
+      tabSwitchesDeltaRef.current = 0;
+      scrollDistanceDeltaRef.current = 0;
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [sessionId]);
+  }, [sessionId, scenarioKey]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -159,7 +255,8 @@ function WorkspacePage() {
       const now = Date.now();
       keyEventsRef.current.push(now);
       lastInputRef.current = now;
-      keystrokesSinceSendRef.current += 1;
+      lastInteractionRef.current = now;
+      keystrokesDeltaRef.current += 1;
       totalKeystrokesRef.current += 1;
 
       if (event.key === "Backspace" || event.key === "Delete") {
@@ -169,30 +266,84 @@ function WorkspacePage() {
       }
     }
 
+    function onScroll() {
+      const now = Date.now();
+      const currentY = window.scrollY || 0;
+      const delta = Math.abs(currentY - lastScrollYRef.current);
+      lastScrollYRef.current = currentY;
+      scrollEventsRef.current.push({ ts: now, delta });
+      scrollDistanceDeltaRef.current += delta;
+      lastInteractionRef.current = now;
+    }
+
+    function onPointerDown() {
+      lastInteractionRef.current = Date.now();
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        tabSwitchesDeltaRef.current += 1;
+      }
+    }
+
     document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
+    document.addEventListener("scroll", onScroll, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("visibilitychange", onVisibilityChange, true);
+
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("scroll", onScroll, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("visibilitychange", onVisibilityChange, true);
+    };
   }, [sessionId]);
 
-  function applyIntervention(intervention) {
-    if (!intervention) {
-      return;
+  function handleInterventionAction(intervention, action) {
+    if (!intervention || !sessionId) {
+      return "";
     }
 
-    markInterventionApplied(sessionId, intervention.id);
-    setMasteryMap((prev) => ({
-      ...prev,
-      [intervention.concept]: Math.min(0.99, (prev[intervention.concept] || 0.5) + 0.04)
-    }));
-    dismissedIssueUntilRef.current[intervention.type] = Date.now() + 4 * 60 * 1000;
-    setActiveIntervention(null);
-  }
+    const update = markInterventionApplied(sessionId, intervention.id, action);
 
-  function dismissIntervention(interventionId) {
-    const target = interventionHistory.find((item) => item.id === interventionId) || activeIntervention;
-    if (target?.type) {
-      dismissedIssueUntilRef.current[target.type] = Date.now() + 4 * 60 * 1000;
+    if (update?.signal) {
+      setSignal(update.signal);
     }
-    setActiveIntervention(null);
+    if (update?.timeline) {
+      setTimeline(update.timeline);
+    }
+
+    setInterventionHistory((prev) =>
+      prev.map((item) =>
+        item.id === intervention.id
+          ? {
+              ...item,
+              userAction: action,
+              generatedSummary: update?.intervention?.generatedSummary || item.generatedSummary
+            }
+          : item
+      )
+    );
+
+    const beforeMinutes = estimateWastedMinutes(signal, telemetry);
+    let afterMinutes = beforeMinutes;
+
+    if (action === "refocus") {
+      afterMinutes = Math.max(1, Math.round(beforeMinutes * 0.4));
+      setActiveIntervention(null);
+    } else if (action === "show_fix") {
+      afterMinutes = Math.max(1, Math.round(beforeMinutes * 0.6));
+    } else if (action === "give_hint") {
+      afterMinutes = Math.max(1, Math.round(beforeMinutes * 0.65));
+    } else if (action === "summarize") {
+      afterMinutes = Math.max(1, Math.round(beforeMinutes * 0.5));
+    }
+
+    const reduction = Math.max(0, Math.round(((beforeMinutes - afterMinutes) / Math.max(1, beforeMinutes)) * 100));
+    setImpactNote(`Estimated time waste: ~${beforeMinutes}m -> ~${afterMinutes}m (${reduction}% reduction)`);
+
+    const actionText = resolveActionText(intervention, action, update?.intervention);
+    return actionText;
   }
 
   async function goToDashboard() {
@@ -204,18 +355,22 @@ function WorkspacePage() {
     navigate(`/dashboard/${sessionId}`);
   }
 
+  const issueLabel = signal.issueType
+    ? `${signal.issueType} (${signal.issueSeverity || "low"})`
+    : "No active issue";
+
   return (
     <main className="page-shell">
       <header className="topbar">
         <div>
-          <h1>Nudge</h1>
-          <p>Real-time intervention system for coding cognition</p>
+          <h1>DecisionOS</h1>
+          <p>Context-aware real-time AI intervention system</p>
         </div>
         <div className="status-cluster">
           <span className={`status-pill ${connected ? "online" : "offline"}`}>
             {connected ? "Live Monitoring" : "Session not started"}
           </span>
-          {learnerName ? <span className="status-pill online">Learner: {learnerName}</span> : null}
+          {learnerName ? <span className="status-pill online">Operator: {learnerName}</span> : null}
           {sessionId ? (
             <button className="btn btn-primary" onClick={goToDashboard}>
               End Session + Dashboard
@@ -226,13 +381,13 @@ function WorkspacePage() {
 
       {!sessionId ? (
         <section className="panel">
-          <h3>Create Learner Session</h3>
-          <p>Enter learner name to start monitoring. No default learner is pre-filled.</p>
+          <h3>Create Operator Session</h3>
+          <p>Start a session to run live detection, intervention, and impact tracking.</p>
           <div className="action-row">
             <input
               value={learnerDraft}
               onChange={(event) => setLearnerDraft(event.target.value)}
-              placeholder="Learner name"
+              placeholder="Operator name"
               className="session-input"
             />
             <button className="btn btn-primary" onClick={handleCreateSession} disabled={startingSession}>
@@ -244,51 +399,85 @@ function WorkspacePage() {
       ) : null}
 
       {sessionId ? (
-        <section className="workspace-grid workspace-grid-single">
-          <aside className="panel panel-side">
-            <h3>Live Detection Feed</h3>
-            <p className="monitor-note">
-              The web app tracks engagement signals only. Use the Chrome extension for page-level live monitoring.
-            </p>
+        <section className="workspace-grid">
+          <article className="panel panel-main">
+            <h3>Live Context Engine</h3>
+            <div className="timeline-box">
+              <h4>Simulated Environment</h4>
+              <div className="action-row">
+                {Object.entries(SCENARIO_PRESETS).map(([key, preset]) => (
+                  <button
+                    key={key}
+                    className={`btn ${scenarioKey === key ? "btn-primary" : "btn-ghost"}`}
+                    onClick={() => setScenarioKey(key)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <p style={{ marginTop: 8 }}>
+                {SCENARIO_PRESETS[scenarioKey]?.title} · {SCENARIO_PRESETS[scenarioKey]?.url}
+              </p>
+            </div>
+
             <div className="metric-grid">
+              <Metric label="Activity" value={context.activityType} />
+              <Metric label="Category" value={context.category} />
+              <Metric label="Domain" value={context.domain} />
+              <Metric label="Confidence" value={`${Math.round((context.confidence || 0) * 100)}%`} />
               <Metric label="Typing speed" value={`${telemetry.typingSpeed} keys/s`} />
+              <Metric label="Idle" value={`${Math.round(telemetry.idleDurationMs / 1000)}s`} />
               <Metric label="Pause" value={`${Math.round(telemetry.pauseDurationMs / 1000)}s`} />
-              <Metric label="Repeated edits" value={telemetry.repeatedEdits} />
-              <Metric label="Deletion rate" value={telemetry.deletionRate} />
-              <Metric label="Complexity score" value={telemetry.complexityScore} />
+              <Metric label="Repeated actions" value={telemetry.repeatedActions} />
+              <Metric label="Scroll speed" value={`${Math.round(telemetry.scrollSpeed)} px/s`} />
+              <Metric label="Tab switches" value={telemetry.tabSwitchesDelta} />
               <Metric label="Total keystrokes" value={telemetry.totalKeystrokes} />
+              <Metric label="Time on task" value={`${Math.round(telemetry.timeOnTaskMs / 1000)}s`} />
             </div>
 
             <div className="signal-box">
-              <h4>Current issue signal</h4>
-              <p>
-                {signal.issueType ? `${signal.issueType} (${signal.issueSeverity})` : "No active issue"}
-              </p>
+              <h4>Current Issue</h4>
+              <p>{issueLabel}</p>
               <div className="progress-track">
-                <span style={{ width: `${Math.min(100, Math.round(signal.confusionScore * 100))}%` }} />
+                <span
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round(
+                        Math.max(signal.confusionScore, signal.distractionScore, signal.inefficiencyScore) * 100
+                      )
+                    )}%`
+                  }}
+                />
               </div>
             </div>
 
-            <div className="mastery-box">
-              <h4>Concept mastery</h4>
-              {Object.entries(masteryMap).map(([concept, mastery]) => (
-                <div className="mastery-row" key={concept}>
-                  <span>{concept}</span>
-                  <div className="progress-track">
-                    <span style={{ width: `${Math.round(mastery * 100)}%` }} />
-                  </div>
-                  <strong>{Math.round(mastery * 100)}%</strong>
+            <div className="impact-box">
+              <h4>Impact System</h4>
+              <p>{impactNote}</p>
+            </div>
+          </article>
+
+          <aside className="panel panel-side">
+            <h3>Decision Timeline</h3>
+            <div className="timeline-box">
+              {timeline.length === 0 ? <p>No events yet.</p> : null}
+              {timeline.map((item) => (
+                <div key={item.id} className="timeline-item">
+                  <span>{item.eventType}</span>
+                  <p>{item.label}</p>
                 </div>
               ))}
             </div>
 
             <div className="timeline-box">
-              <h4>Intervention timeline</h4>
+              <h4>Intervention History</h4>
               {interventionHistory.length === 0 ? <p>No interventions yet.</p> : null}
               {interventionHistory.map((item) => (
                 <div key={item.id} className="timeline-item">
                   <span>{item.type}</span>
                   <p>{item.message}</p>
+                  {item.userAction ? <p>Action: {item.userAction}</p> : null}
                 </div>
               ))}
             </div>
@@ -297,12 +486,10 @@ function WorkspacePage() {
       ) : null}
 
       {sessionId ? (
-        <InterventionPopup
-          intervention={activeIntervention}
-          onApply={applyIntervention}
-          onDismiss={dismissIntervention}
-        />
+        <FloatingAssistant context={context} signal={signal} intervention={activeIntervention || interventionHistory[0]} />
       ) : null}
+
+      {sessionId ? <InterventionPopup intervention={activeIntervention} onAction={handleInterventionAction} /> : null}
     </main>
   );
 }
@@ -313,6 +500,44 @@ function Metric({ label, value }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function resolveActionText(intervention, action, updatedIntervention) {
+  const payloads = intervention.actionPayloads || {};
+
+  if (action === "summarize" && updatedIntervention?.generatedSummary) {
+    return updatedIntervention.generatedSummary;
+  }
+
+  const mapped = {
+    show_fix: payloads.show_fix,
+    give_hint: payloads.give_hint,
+    refocus: payloads.refocus,
+    summarize: payloads.summarize
+  };
+
+  return mapped[action] || intervention.nextAction;
+}
+
+function estimateWastedMinutes(signal, telemetry) {
+  const friction = Math.max(signal.confusionScore || 0, signal.distractionScore || 0, signal.inefficiencyScore || 0);
+  const base = Math.max(2, Math.round((telemetry.timeOnTaskMs || 0) / 60000));
+  return Math.max(1, Math.round(base * (0.6 + friction)));
+}
+
+function extractPageTextSample() {
+  const candidate =
+    document.querySelector("main") || document.querySelector("article") || document.querySelector("section") || document.body;
+  const text = (candidate?.innerText || "").replace(/\s+/g, " ").trim();
+  return text.slice(0, 700);
+}
+
+function hasEditableSurface() {
+  return Boolean(
+    document.querySelector(
+      "textarea, [contenteditable='true'], input[type='text'], input[type='search'], input:not([type])"
+    )
   );
 }
 

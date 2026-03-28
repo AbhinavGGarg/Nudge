@@ -1,96 +1,224 @@
-import { getPrerequisiteGaps, getProblemById } from "./knowledgeGraph.js";
+import { CONTEXT_PROFILES } from "./knowledgeGraph.js";
 
-function detectIssue(session, metricsPayload) {
+function normalizeMetrics(raw = {}) {
+  return {
+    typingSpeed: numberOrZero(raw.typingSpeed),
+    pauseDurationMs: numberOrZero(raw.pauseDurationMs),
+    idleDurationMs: numberOrZero(raw.idleDurationMs),
+    repeatedActions: numberOrZero(raw.repeatedActions),
+    repeatedEdits: numberOrZero(raw.repeatedEdits),
+    deletionRate: numberOrZero(raw.deletionRate),
+    scrollSpeed: numberOrZero(raw.scrollSpeed),
+    scrollBursts: numberOrZero(raw.scrollBursts),
+    scrollDistance: numberOrZero(raw.scrollDistance),
+    tabSwitchesDelta: numberOrZero(raw.tabSwitchesDelta),
+    timeOnTaskMs: numberOrZero(raw.timeOnTaskMs),
+    keystrokesDelta: numberOrZero(raw.keystrokesDelta),
+    contextSample: String(raw.contextSample || ""),
+    pageTextSample: String(raw.pageTextSample || ""),
+    pageTitle: String(raw.pageTitle || ""),
+    url: String(raw.url || ""),
+    hasVideo: Boolean(raw.hasVideo),
+    hasEditable: Boolean(raw.hasEditable)
+  };
+}
+
+function classifyContext(metrics) {
+  const url = metrics.url || "";
+  const domain = domainFromUrl(url);
+  const text = `${metrics.pageTitle} ${metrics.contextSample} ${metrics.pageTextSample}`.toLowerCase();
+
+  const isCoding = matchesContext("coding", domain, text);
+  const isWatching = metrics.hasVideo || matchesContext("watching", domain, text);
+  const isWriting = metrics.hasEditable || matchesContext("writing", domain, text);
+  const isStudying = matchesContext("studying", domain, text);
+
+  let activityType = "reading";
+  let category = "consuming_content";
+  const evidence = [];
+
+  if (isCoding) {
+    activityType = "coding";
+    category = "problem_solving";
+    evidence.push("Code context signal");
+  } else if (isWriting && metrics.typingSpeed > 0.3) {
+    activityType = "writing";
+    category = "writing";
+    evidence.push("Active writing signal");
+  } else if (isWatching) {
+    activityType = "watching";
+    category = "consuming_content";
+    evidence.push("Video context signal");
+  } else if (isStudying) {
+    activityType = "studying";
+    category = "learning";
+    evidence.push("Learning context signal");
+  }
+
+  const confidence = Number(
+    Math.min(
+      0.95,
+      0.45 + (isCoding ? 0.22 : 0) + (isWriting ? 0.18 : 0) + (isWatching ? 0.15 : 0) + (isStudying ? 0.15 : 0)
+    ).toFixed(2)
+  );
+
+  return {
+    domain,
+    url,
+    pageTitle: metrics.pageTitle,
+    category,
+    activityType,
+    confidence,
+    evidence: evidence.slice(0, 3)
+  };
+}
+
+function detectIssue(session, metrics, context) {
   if (!session) {
     return null;
   }
 
-  const {
-    problemId,
-    typingSpeed = 0,
-    pauseDurationMs = 0,
-    repeatedEdits = 0,
-    deletionRate = 0,
-    timeOnProblemMs = 0,
-    complexityScore = 0,
-    nestedLoopSignals = 0
-  } = metricsPayload;
+  const meaningfulActivity =
+    session.aggregate.totalKeystrokes >= 4 ||
+    session.aggregate.totalScrollDistance >= 600 ||
+    metrics.timeOnTaskMs > 20000;
 
-  const problem = getProblemById(problemId);
-  const concept = session.currentConcept || problem?.concepts[0] || "functions";
-  const recentAttempts = session.attempts.filter((attempt) => attempt.problemId === problemId).slice(-3);
-  const incorrectAttempts = recentAttempts.filter((attempt) => !attempt.isCorrect).length;
+  if (!meaningfulActivity) {
+    return null;
+  }
 
-  const confusionSignals = [];
-  if (pauseDurationMs > 11000) {
-    confusionSignals.push("long_pause");
-  }
-  if (repeatedEdits >= 6 || deletionRate > 0.32) {
-    confusionSignals.push("churn_editing");
-  }
-  if (typingSpeed < 1.1 && timeOnProblemMs > 60000) {
-    confusionSignals.push("slow_progress");
-  }
-  if (incorrectAttempts >= 2) {
-    confusionSignals.push("repeat_incorrect_attempts");
-  }
+  const pauseFactor = clamp(metrics.pauseDurationMs / 22000);
+  const idleFactor = clamp(metrics.idleDurationMs / 30000);
+  const repeatFactor = clamp(metrics.repeatedActions / 8);
+  const deletionFactor = clamp(metrics.deletionRate * 1.8);
+  const retriesFactor = clamp(metrics.repeatedEdits / 7);
+  const tabFactor = clamp(metrics.tabSwitchesDelta / 3);
+  const scrollBurstFactor = clamp(metrics.scrollBursts / 12);
+  const lowTypingFactor = clamp((0.8 - metrics.typingSpeed) / 0.8);
+  const slowProgress = metrics.timeOnTaskMs > 120000 && metrics.typingSpeed < 0.45 ? clamp(metrics.timeOnTaskMs / 360000) : 0;
 
   const confusionScore =
-    (pauseDurationMs > 0 ? Math.min(1, pauseDurationMs / 18000) : 0) * 0.4 +
-    Math.min(1, repeatedEdits / 10) * 0.25 +
-    Math.min(1, incorrectAttempts / 3) * 0.2 +
-    Math.min(1, Math.max(0, 1.3 - typingSpeed)) * 0.15;
+    pauseFactor * 0.35 + repeatFactor * 0.25 + retriesFactor * 0.2 + deletionFactor * 0.2;
+  const distractionScore =
+    tabFactor * 0.35 + idleFactor * 0.35 + scrollBurstFactor * 0.2 + lowTypingFactor * 0.1;
+  const inefficiencyScore =
+    slowProgress * 0.4 + repeatFactor * 0.35 + clamp(metrics.scrollSpeed / 1600) * 0.15 + lowTypingFactor * 0.1;
 
-  const inefficiencyDetected =
-    complexityScore > 0.72 || nestedLoopSignals > 0 || (timeOnProblemMs > 150000 && typingSpeed < 1.5);
-
-  const prerequisiteGaps = getPrerequisiteGaps(concept, session.masteryByConcept);
-
-  if (prerequisiteGaps.length > 0 && (incorrectAttempts >= 1 || confusionSignals.length >= 2)) {
-    const gap = prerequisiteGaps[0];
-    return {
-      type: "knowledge_gap",
-      severity: confusionScore > 0.72 ? "high" : "medium",
-      concept,
-      reason: `Current task relies on ${gap.missingPrerequisite}, but mastery is low (${gap.mastery}).`,
-      diagnostics: {
-        confusionSignals,
-        incorrectAttempts,
-        confusionScore,
-        missingPrerequisite: gap.missingPrerequisite
-      }
-    };
-  }
-
-  if (confusionSignals.length >= 2 || confusionScore > 0.64) {
-    return {
+  const candidates = [
+    {
       type: "confusion",
-      severity: confusionScore > 0.82 ? "high" : "medium",
-      concept,
-      reason: "Student behavior indicates they may be stuck or uncertain.",
-      diagnostics: {
-        confusionSignals,
-        incorrectAttempts,
-        confusionScore
-      }
-    };
-  }
-
-  if (inefficiencyDetected) {
-    return {
+      score: confusionScore,
+      threshold: 0.62,
+      reason: `Repeated retries plus pauses suggest you are stuck while ${context.activityType}.`
+    },
+    {
+      type: "distraction",
+      score: distractionScore,
+      threshold: 0.56,
+      reason: `Idle time and context switches suggest attention drift during ${context.activityType}.`
+    },
+    {
       type: "inefficiency",
-      severity: complexityScore > 0.8 ? "medium" : "low",
-      concept,
-      reason: "Solution path appears over-complex for the target concept.",
-      diagnostics: {
-        complexityScore,
-        nestedLoopSignals,
-        timeOnProblemMs
-      }
-    };
+      score: inefficiencyScore,
+      threshold: 0.58,
+      reason: `Current behavior suggests low-return effort for this ${context.activityType} flow.`
+    }
+  ].sort((a, b) => b.score - a.score);
+
+  const top = candidates[0];
+  if (!top || top.score < top.threshold) {
+    return null;
   }
 
-  return null;
+  return {
+    type: top.type,
+    severity: severityFromScore(top.score),
+    score: Number(top.score.toFixed(2)),
+    reason: top.reason,
+    diagnostics: {
+      confusionScore: Number(confusionScore.toFixed(2)),
+      distractionScore: Number(distractionScore.toFixed(2)),
+      inefficiencyScore: Number(inefficiencyScore.toFixed(2)),
+      pauseDurationMs: metrics.pauseDurationMs,
+      idleDurationMs: metrics.idleDurationMs,
+      repeatedActions: metrics.repeatedActions,
+      tabSwitchesDelta: metrics.tabSwitchesDelta
+    }
+  };
 }
 
-export { detectIssue };
+function buildSignal(issue) {
+  if (!issue) {
+    return emptySignal();
+  }
+
+  return {
+    issueType: issue.type,
+    issueSeverity: issue.severity,
+    confusionScore: issue.diagnostics?.confusionScore || 0,
+    distractionScore: issue.diagnostics?.distractionScore || 0,
+    inefficiencyScore: issue.diagnostics?.inefficiencyScore || 0
+  };
+}
+
+function emptySignal() {
+  return {
+    issueType: null,
+    issueSeverity: null,
+    confusionScore: 0,
+    distractionScore: 0,
+    inefficiencyScore: 0
+  };
+}
+
+function emptyContext() {
+  return {
+    domain: "unknown",
+    url: "",
+    pageTitle: "",
+    category: "consuming_content",
+    activityType: "reading",
+    confidence: 0.4,
+    evidence: []
+  };
+}
+
+function severityFromScore(score) {
+  if (score >= 0.82) {
+    return "high";
+  }
+  if (score >= 0.68) {
+    return "medium";
+  }
+  return "low";
+}
+
+function matchesContext(profileKey, domain, text) {
+  const profile = CONTEXT_PROFILES[profileKey];
+  if (!profile) {
+    return false;
+  }
+  return profile.domains.some((entry) => domain.includes(entry)) || profile.keywords.some((token) => text.includes(token));
+}
+
+function domainFromUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "unknown";
+  }
+}
+
+function clamp(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function numberOrZero(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+export { buildSignal, classifyContext, detectIssue, emptyContext, emptySignal, normalizeMetrics };

@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Nudge Learning Copilot",
-  "version": "0.1.0",
-  "description": "Real-time learning intervention overlay for coding and study workflows.",
+  "name": "DecisionOS Context Copilot",
+  "version": "0.2.0",
+  "description": "Context-aware real-time intervention overlay for live decision support across websites.",
   "permissions": ["storage", "tabs", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background.js"
   },
   "action": {
-    "default_title": "Nudge",
+    "default_title": "DecisionOS",
     "default_popup": "src/popup.html"
   },
   "content_scripts": [

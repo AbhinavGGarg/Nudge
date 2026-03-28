@@ -2,13 +2,36 @@ const NUDGE_TAG = "nudge-extension-root";
 
 let sessionStartedAt = Date.now();
 let lastInputAt = Date.now();
+let lastInteractionAt = Date.now();
+
 let keyEvents = [];
 let editEvents = [];
+let scrollEvents = [];
+
 let keystrokesDelta = 0;
 let totalKeystrokes = 0;
+let tabSwitchesDelta = 0;
+let scrollDistanceDelta = 0;
+let lastScrollY = window.scrollY || 0;
 let previousText = "";
+
 let lastIntervention = null;
-let currentSignal = { issueType: null, issueSeverity: null, confusionScore: 0 };
+let currentSignal = {
+  issueType: null,
+  issueSeverity: null,
+  confusionScore: 0,
+  distractionScore: 0,
+  inefficiencyScore: 0
+};
+let currentContext = {
+  domain: window.location.hostname || "unknown",
+  category: "consuming_content",
+  activityType: "reading",
+  confidence: 0.4
+};
+let recentTimeline = [];
+let actionDetail = "";
+
 let isCollapsed = false;
 let isClosed = false;
 
@@ -25,6 +48,9 @@ function boot() {
 
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("input", onInput, true);
+  document.addEventListener("scroll", onScroll, true);
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("visibilitychange", onVisibilityChange, true);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || !message.type) {
@@ -32,8 +58,11 @@ function boot() {
     }
 
     if (message.type === "NUDGE_INTERVENTION") {
-      lastIntervention = message.intervention;
+      lastIntervention = message.intervention || lastIntervention;
       currentSignal = message.signal || currentSignal;
+      currentContext = message.context || currentContext;
+      recentTimeline = message.timeline || recentTimeline;
+      actionDetail = "";
       renderOverlay();
       sendResponse({ ok: true });
     }
@@ -55,6 +84,7 @@ function onKeyDown(event) {
   const now = Date.now();
   keyEvents.push(now);
   lastInputAt = now;
+  lastInteractionAt = now;
   keystrokesDelta += 1;
   totalKeystrokes += 1;
 
@@ -70,6 +100,7 @@ function onInput(event) {
 
   const now = Date.now();
   lastInputAt = now;
+  lastInteractionAt = now;
 
   const text = extractWorkingText();
   if (text.length > previousText.length) {
@@ -81,6 +112,27 @@ function onInput(event) {
   previousText = text;
 }
 
+function onScroll() {
+  const now = Date.now();
+  const currentY = window.scrollY || 0;
+  const delta = Math.abs(currentY - lastScrollY);
+  lastScrollY = currentY;
+
+  scrollEvents.push({ ts: now, delta });
+  scrollDistanceDelta += delta;
+  lastInteractionAt = now;
+}
+
+function onPointerDown() {
+  lastInteractionAt = Date.now();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    tabSwitchesDelta += 1;
+  }
+}
+
 function publishMetrics() {
   const now = Date.now();
   const tenSec = now - 10000;
@@ -88,26 +140,43 @@ function publishMetrics() {
 
   keyEvents = keyEvents.filter((ts) => ts >= tenSec);
   editEvents = editEvents.filter((entry) => entry.ts >= twentySec);
+  scrollEvents = scrollEvents.filter((entry) => entry.ts >= tenSec);
 
   const text = extractWorkingText();
+  const pageTextSample = extractPageTextSample();
+
   const pauseDurationMs = now - lastInputAt;
+  const idleDurationMs = now - lastInteractionAt;
   const repeatedEdits = editEvents.filter((entry) => entry.type === "delete").length;
   const insertCount = editEvents.filter((entry) => entry.type === "insert").length;
   const deleteCount = repeatedEdits;
+  const scrollDistanceRecent = scrollEvents.reduce((sum, entry) => sum + entry.delta, 0);
+  const scrollBursts = scrollEvents.filter((entry) => entry.delta > 140).length;
 
   const metrics = {
     typingSpeed: Number((keyEvents.length / 10).toFixed(2)),
     pauseDurationMs,
+    idleDurationMs,
     repeatedEdits,
+    repeatedActions: repeatedEdits + Math.floor(scrollBursts / 2),
     deletionRate: Number((deleteCount / Math.max(1, insertCount + deleteCount)).toFixed(2)),
-    complexityScore: estimateComplexity(text),
-    nestedLoopSignals: /(for|while)[\s\S]{0,120}(for|while)/i.test(text) ? 1 : 0,
-    timeOnProblemMs: now - sessionStartedAt,
+    scrollSpeed: Number((scrollDistanceRecent / 10).toFixed(2)),
+    scrollBursts,
+    scrollDistance: Math.round(scrollDistanceDelta),
+    tabSwitchesDelta,
+    timeOnTaskMs: now - sessionStartedAt,
     keystrokesDelta,
-    contextSample: `${document.title}\n${text.slice(0, 500)}`
+    pageTitle: document.title,
+    url: window.location.href,
+    contextSample: `${document.title}\n${text.slice(0, 500)}`,
+    pageTextSample,
+    hasVideo: Boolean(document.querySelector("video")),
+    hasEditable: hasEditableSurface()
   };
 
   keystrokesDelta = 0;
+  tabSwitchesDelta = 0;
+  scrollDistanceDelta = 0;
 
   chrome.runtime.sendMessage({ type: "NUDGE_METRICS", metrics }, (response) => {
     if (!response || !response.ok) {
@@ -117,13 +186,64 @@ function publishMetrics() {
     if (response.signal) {
       currentSignal = response.signal;
     }
-
+    if (response.context) {
+      currentContext = response.context;
+    }
+    if (response.timeline) {
+      recentTimeline = response.timeline;
+    }
     if (response.intervention) {
       lastIntervention = response.intervention;
+      revealSuggestion = false;
     }
 
     renderOverlay();
   });
+}
+
+function handleInterventionAction(action) {
+  if (!lastIntervention) {
+    return;
+  }
+
+  const actionPayloads = lastIntervention.actionPayloads || {};
+  const immediateDetail = actionPayloads[action] || lastIntervention.nextAction || "";
+  actionDetail = immediateDetail;
+  renderOverlay();
+
+  chrome.runtime.sendMessage(
+    {
+      type: "NUDGE_ACTION",
+      interventionId: lastIntervention.id,
+      action
+    },
+    (response) => {
+      if (!response || !response.ok) {
+        renderOverlay();
+        return;
+      }
+
+      if (response.signal) {
+        currentSignal = response.signal;
+      }
+      if (response.context) {
+        currentContext = response.context;
+      }
+      if (response.timeline) {
+        recentTimeline = response.timeline;
+      }
+      if (response.intervention) {
+        lastIntervention = response.intervention;
+      }
+
+      if (action === "refocus") {
+        lastIntervention = null;
+        actionDetail = "";
+      }
+
+      renderOverlay();
+    }
+  );
 }
 
 function createOverlay() {
@@ -140,7 +260,7 @@ function createOverlay() {
       "position:fixed",
       "right:14px",
       "bottom:14px",
-      "width:320px",
+      "width:360px",
       "max-width:calc(100vw - 28px)",
       "z-index:2147483646",
       "border-radius:14px",
@@ -164,20 +284,12 @@ function createOverlay() {
     ].join(";")
   );
 
-  const title = document.createElement("strong");
-  title.textContent = "Nudge Live";
-  title.style.fontSize = "13px";
-  overlayTitle = title;
+  overlayTitle = document.createElement("strong");
+  overlayTitle.textContent = "DecisionOS Live";
+  overlayTitle.style.fontSize = "13px";
 
   const controls = document.createElement("div");
-  controls.setAttribute(
-    "style",
-    [
-      "display:flex",
-      "align-items:center",
-      "gap:8px"
-    ].join(";")
-  );
+  controls.setAttribute("style", "display:flex;align-items:center;gap:8px");
 
   collapseBtn = document.createElement("button");
   collapseBtn.textContent = "Collapse";
@@ -223,9 +335,9 @@ function createOverlay() {
     showReopenChip();
   });
 
-  head.appendChild(title);
   controls.appendChild(collapseBtn);
   controls.appendChild(closeBtn);
+  head.appendChild(overlayTitle);
   head.appendChild(controls);
 
   overlayBody = document.createElement("div");
@@ -236,6 +348,7 @@ function createOverlay() {
   overlay.appendChild(head);
   overlay.appendChild(overlayBody);
   document.documentElement.appendChild(overlay);
+
   createReopenChip();
   renderOverlay();
 }
@@ -245,25 +358,28 @@ function renderOverlay() {
     return;
   }
 
-  const issueLabel = currentSignal.issueType
-    ? `${currentSignal.issueType} (${currentSignal.issueSeverity || "low"})`
-    : "No active issue";
-
-  overlay.style.width = isCollapsed ? "240px" : "320px";
+  overlay.style.width = isCollapsed ? "250px" : "360px";
   overlay.style.maxWidth = "calc(100vw - 28px)";
+
   if (overlayTitle) {
-    overlayTitle.textContent = isCollapsed ? "Nudge Live (Collapsed)" : "Nudge Live";
+    overlayTitle.textContent = isCollapsed ? "DecisionOS (Collapsed)" : "DecisionOS Live";
   }
   if (collapseBtn) {
     collapseBtn.textContent = isCollapsed ? "Expand" : "Collapse";
   }
 
+  const issueLabel = currentSignal.issueType
+    ? `${currentSignal.issueType} (${currentSignal.issueSeverity || "low"})`
+    : "No active issue";
+
+  const contextLine = `${currentContext.activityType || "reading"} • ${currentContext.category || "consuming_content"}`;
+
   if (isCollapsed) {
     overlayBody.innerHTML = `
       <div style="display:grid;gap:4px">
+        <div><strong>Context:</strong> ${escapeHtml(contextLine)}</div>
         <div><strong>Issue:</strong> ${escapeHtml(issueLabel)}</div>
-        <div><strong>Score:</strong> ${Math.round((currentSignal.confusionScore || 0) * 100)}%</div>
-        <div style="color:#94a3b8">Click Expand to reopen details</div>
+        <div><strong>Friction:</strong> ${Math.round((currentSignal.confusionScore || 0) * 100)}%</div>
       </div>
     `;
     return;
@@ -274,41 +390,69 @@ function renderOverlay() {
       <div style="margin-top:10px;padding:9px;border-radius:10px;background:rgba(14,165,233,0.12);border:1px solid rgba(14,165,233,0.35)">
         <div style="font-weight:700;color:#67e8f9">${escapeHtml(lastIntervention.title)}</div>
         <div style="margin-top:4px">${escapeHtml(lastIntervention.message)}</div>
-        <div style="margin-top:6px;color:#cbd5e1"><strong>Next:</strong> ${escapeHtml(lastIntervention.nextAction)}</div>
-        <button id="nudge-apply-btn" style="margin-top:8px;background:#0ea5e9;color:#f8fafc;border:none;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12px">Mark Applied</button>
+        <div style="margin-top:6px;color:#cbd5e1"><strong>Try:</strong> ${escapeHtml(lastIntervention.nextAction)}</div>
+        <div style="margin-top:6px;padding:7px;border-radius:8px;background:rgba(15,23,42,0.35);display:${
+          actionDetail ? "block" : "none"
+        }">${escapeHtml(actionDetail || "")}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button id="nudge-show-fix" style="background:#0ea5e9;color:#f8fafc;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px">Show Fix</button>
+          <button id="nudge-give-hint" style="background:rgba(56,189,248,0.18);color:#e0f2fe;border:1px solid rgba(56,189,248,0.5);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px">Give Hint</button>
+          <button id="nudge-refocus" style="background:#22c55e;color:#052e16;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px;font-weight:700">Refocus</button>
+          <button id="nudge-summarize" style="background:rgba(148,163,184,0.2);color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px">Summarize</button>
+        </div>
       </div>
     `
-    : `<div style="margin-top:10px;color:#94a3b8">Monitoring behavior. Interventions appear here live.</div>`;
+    : `<div style="margin-top:10px;color:#94a3b8">Monitoring context and behavior for real-time interventions.</div>`;
+
+  const timelineHtml = recentTimeline.length
+    ? recentTimeline
+        .slice(0, 4)
+        .map(
+          (item) => `
+            <div style="margin-top:6px;padding-left:7px;border-left:2px solid rgba(249,115,22,0.45)">
+              <div style="font-size:11px;color:#fb923c;text-transform:uppercase">${escapeHtml(
+                formatEventType(item.eventType)
+              )}</div>
+              <div>${escapeHtml(item.label || "Event")}</div>
+            </div>
+          `
+        )
+        .join("")
+    : `<div style="margin-top:6px;color:#94a3b8">No timeline events yet.</div>`;
 
   overlayBody.innerHTML = `
     <div style="display:grid;gap:4px">
       <div><strong>Status:</strong> Live monitoring</div>
+      <div><strong>Context:</strong> ${escapeHtml(contextLine)}</div>
+      <div><strong>Site:</strong> ${escapeHtml(currentContext.domain || window.location.hostname || "unknown")}</div>
       <div><strong>Issue:</strong> ${escapeHtml(issueLabel)}</div>
-      <div><strong>Confusion score:</strong> ${Math.round((currentSignal.confusionScore || 0) * 100)}%</div>
       <div><strong>Keystrokes:</strong> ${totalKeystrokes}</div>
     </div>
+
     ${interventionHtml}
+
+    <div style="margin-top:10px;border-top:1px solid rgba(148,163,184,0.2);padding-top:8px">
+      <div style="font-weight:700;color:#cbd5e1">Timeline</div>
+      ${timelineHtml}
+    </div>
   `;
 
-  const applyBtn = overlayBody.querySelector("#nudge-apply-btn");
-  if (applyBtn && lastIntervention) {
-    applyBtn.addEventListener("click", () => {
-      chrome.runtime.sendMessage(
-        {
-          type: "NUDGE_APPLY_INTERVENTION",
-          interventionId: lastIntervention.id
-        },
-        () => {
-          if (!lastIntervention) {
-            return;
-          }
-          lastIntervention.applied = true;
-          applyBtn.textContent = "Applied";
-          applyBtn.setAttribute("disabled", "true");
-          applyBtn.style.opacity = "0.7";
-        }
-      );
-    });
+  const showFixBtn = overlayBody.querySelector("#nudge-show-fix");
+  const giveHintBtn = overlayBody.querySelector("#nudge-give-hint");
+  const refocusBtn = overlayBody.querySelector("#nudge-refocus");
+  const summarizeBtn = overlayBody.querySelector("#nudge-summarize");
+
+  if (showFixBtn && lastIntervention) {
+    showFixBtn.addEventListener("click", () => handleInterventionAction("show_fix"));
+  }
+  if (giveHintBtn && lastIntervention) {
+    giveHintBtn.addEventListener("click", () => handleInterventionAction("give_hint"));
+  }
+  if (refocusBtn && lastIntervention) {
+    refocusBtn.addEventListener("click", () => handleInterventionAction("refocus"));
+  }
+  if (summarizeBtn && lastIntervention) {
+    summarizeBtn.addEventListener("click", () => handleInterventionAction("summarize"));
   }
 }
 
@@ -320,7 +464,7 @@ function createReopenChip() {
 
   reopenChip = document.createElement("button");
   reopenChip.id = "nudge-reopen-chip";
-  reopenChip.textContent = "N";
+  reopenChip.textContent = "D";
   reopenChip.setAttribute(
     "style",
     [
@@ -382,12 +526,22 @@ function extractWorkingText() {
     return (textareas[0].value || "").slice(0, 6000);
   }
 
-  const codeNode = document.querySelector("pre code, .monaco-editor, .cm-content, [data-language]");
-  if (codeNode) {
-    return (codeNode.textContent || "").slice(0, 6000);
-  }
-
   return "";
+}
+
+function extractPageTextSample() {
+  const candidate =
+    document.querySelector("main") || document.querySelector("article") || document.querySelector("section") || document.body;
+  const text = (candidate?.innerText || "").replace(/\s+/g, " ").trim();
+  return text.slice(0, 700);
+}
+
+function hasEditableSurface() {
+  return Boolean(
+    document.querySelector(
+      "textarea, [contenteditable='true'], input[type='text'], input[type='search'], input:not([type])"
+    )
+  );
 }
 
 function isTextLikeInput(node) {
@@ -420,15 +574,8 @@ function isSensitiveTarget(node) {
   return node.closest("[data-nudge-ignore='true']") !== null;
 }
 
-function estimateComplexity(code) {
-  const lines = code.split("\n").filter((line) => line.trim()).length;
-  const loops = (code.match(/\bfor\b|\bwhile\b/g) || []).length;
-  const conditionals = (code.match(/\bif\b|\bswitch\b/g) || []).length;
-  const functions = (code.match(/function\s+|=>/g) || []).length;
-  const recursionHints = (code.match(/\w+\s*\(/g) || []).length > 18 ? 1 : 0;
-
-  const raw = lines * 0.03 + loops * 0.16 + conditionals * 0.1 + functions * 0.08 + recursionHints * 0.1;
-  return Number(Math.min(1, raw).toFixed(2));
+function formatEventType(value) {
+  return String(value || "event").replaceAll("_", " ");
 }
 
 function escapeHtml(value) {

@@ -1,34 +1,19 @@
 import OpenAI from "openai";
+import { getInterventionTemplate } from "./knowledgeGraph.js";
 
 const client = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-function buildFallback(issue, assets) {
-  const byType = {
-    confusion: {
-      title: "Stuck Moment Detected",
-      message: `You seem stuck on ${issue.concept}. Want a 60-second reset?`,
-      nextAction: "Pause and write pseudocode with 3 steps before coding again."
-    },
-    knowledge_gap: {
-      title: "Prerequisite Gap Identified",
-      message: `This task depends on ${issue.diagnostics?.missingPrerequisite}. Quick refresher now?`,
-      nextAction: `Review ${issue.diagnostics?.missingPrerequisite} with one tiny example, then retry.`
-    },
-    inefficiency: {
-      title: "Simpler Path Available",
-      message: `Your approach may be over-complex for ${issue.concept}.`,
-      nextAction: "Aim for the smallest correct pattern first, then optimize."
-    }
-  };
-
-  const selected = byType[issue.type] || byType.confusion;
+function buildFallback({ issue, context }) {
+  const template = getInterventionTemplate(context.activityType, issue.type);
 
   return {
-    ...selected,
-    miniLesson: assets.miniLesson,
-    shortExample: assets.shortExample,
-    quickPractice: assets.quickPractice
+    title: template.title,
+    message: template.message,
+    nextAction: template.nextAction,
+    actionPayloads: template.actionPayloads,
+    impactBefore: "~5 min likely wasted",
+    impactAfter: "~2 min after intervention"
   };
 }
 
@@ -53,56 +38,72 @@ function extractJson(text) {
   }
 }
 
-async function generateIntervention({ issue, problem, metrics, sessionSnapshot, assets }) {
-  const fallback = buildFallback(issue, assets);
+function sanitizePayload(parsed, fallback) {
+  if (!parsed || typeof parsed !== "object") {
+    return fallback;
+  }
+
+  const actionPayloads = parsed.actionPayloads || {};
+
+  return {
+    title: parsed.title || fallback.title,
+    message: parsed.message || fallback.message,
+    nextAction: parsed.nextAction || fallback.nextAction,
+    actionPayloads: {
+      show_fix: actionPayloads.show_fix || fallback.actionPayloads.show_fix,
+      give_hint: actionPayloads.give_hint || fallback.actionPayloads.give_hint,
+      refocus: actionPayloads.refocus || fallback.actionPayloads.refocus,
+      summarize: actionPayloads.summarize || fallback.actionPayloads.summarize
+    },
+    impactBefore: parsed.impactBefore || fallback.impactBefore,
+    impactAfter: parsed.impactAfter || fallback.impactAfter
+  };
+}
+
+async function generateIntervention({ issue, context, metrics, sessionSnapshot }) {
+  const fallback = buildFallback({ issue, context });
 
   if (!client) {
     return fallback;
   }
 
-  const prompt = `You are Nudge, an active learning intervention engine.
-Return JSON only with keys: title, message, nextAction, miniLesson, shortExample, quickPractice.
+  const prompt = `You are DecisionOS, a context-aware real-time intervention system.
+Return JSON only with keys:
+- title
+- message
+- nextAction
+- impactBefore
+- impactAfter
+- actionPayloads: { show_fix, give_hint, refocus, summarize }
+
+Constraints:
+- Keep title under 6 words.
+- Keep message under 18 words.
+- Keep each action payload under 18 words.
+- Must include what is happening, why it is happening, and what to do next.
 
 Context:
+- activityType: ${context.activityType}
+- category: ${context.category}
+- domain: ${context.domain}
 - issueType: ${issue.type}
 - severity: ${issue.severity}
-- concept: ${issue.concept}
 - reason: ${issue.reason}
 - diagnostics: ${JSON.stringify(issue.diagnostics)}
-- problem: ${problem?.title}
-- prompt: ${problem?.prompt}
 - metrics: ${JSON.stringify(metrics)}
-- mastery: ${JSON.stringify(sessionSnapshot.masteryByConcept)}
-
-Rules:
-- Keep message under 18 words.
-- Be direct, supportive, and action-oriented.
-- Mention prerequisite explicitly when issueType is knowledge_gap.
-- Provide a 1-minute mini lesson and one tiny practice.
+- aggregate: ${JSON.stringify(sessionSnapshot.aggregate)}
 `;
 
   try {
     const response = await client.chat.completions.create({
       model,
-      temperature: 0.3,
+      temperature: 0.25,
       messages: [{ role: "user", content: prompt }]
     });
 
-    const text = response.choices?.[0]?.message?.content;
-    const parsed = extractJson(text);
-
-    if (!parsed) {
-      return fallback;
-    }
-
-    return {
-      title: parsed.title || fallback.title,
-      message: parsed.message || fallback.message,
-      nextAction: parsed.nextAction || fallback.nextAction,
-      miniLesson: parsed.miniLesson || fallback.miniLesson,
-      shortExample: parsed.shortExample || fallback.shortExample,
-      quickPractice: parsed.quickPractice || fallback.quickPractice
-    };
+    const content = response.choices?.[0]?.message?.content || "";
+    const parsed = extractJson(content);
+    return sanitizePayload(parsed, fallback);
   } catch {
     return fallback;
   }
