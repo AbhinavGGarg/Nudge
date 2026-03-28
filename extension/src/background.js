@@ -1,6 +1,7 @@
 const tabSessions = new Map();
 
 const LIVE_RESULTS_URL = "https://nudge-frontend-ten.vercel.app";
+const BRAND_NAME = "Tether";
 const STRICT_INACTIVITY_MS = 60 * 1000;
 const INACTIVITY_NOTIFICATION_COOLDOWN_MS = 90 * 1000;
 
@@ -114,6 +115,15 @@ async function handleMetricsMessage(message, sender) {
   if (issue) {
     bumpIssueCounters(session, issue.type);
     addTimeline(session, "issue_detected", `${humanizeIssue(issue.type)} detected`, issue.reason);
+    if (issue.interruptionDetected) {
+      addTimeline(
+        session,
+        "interruption_detected",
+        "Interruption detector triggered",
+        "You stopped, resumed, and stopped again."
+      );
+      session.recentInterruptionPattern = false;
+    }
 
     if (issue.strategy === "inactivity_strict") {
       maybeSendInactivityNotification(session, {
@@ -296,8 +306,16 @@ function ensureSession(tabId, url, title) {
       repeatedActions: 0,
       scrollSpeed: 0,
       tabSwitchesDelta: 0,
-      totalKeystrokes: 0
+      totalKeystrokes: 0,
+      isPageActive: false
     },
+    interruptionStats: {
+      lostFocusCount: 0,
+      recoveredCount: 0,
+      savedMinutes: 0,
+      patternDetections: 0
+    },
+    recentInterruptionPattern: false,
     pendingIgnoredReminder: null,
     inactivityReminderStopped: false,
     lastInactivityNotificationAt: 0
@@ -327,8 +345,12 @@ function normalizeMetrics(metrics, tab) {
     pageTextSample: String(metrics.pageTextSample || ""),
     pageTitle: String(metrics.pageTitle || tab?.title || ""),
     url: String(metrics.url || tab?.url || ""),
+    pageHost: String(metrics.pageHost || domainFromUrl(metrics.url || tab?.url || "")),
+    pageKey: String(metrics.pageKey || ""),
+    isPageActive: Boolean(metrics.isPageActive),
     hasVideo: Boolean(metrics.hasVideo),
-    hasEditable: Boolean(metrics.hasEditable)
+    hasEditable: Boolean(metrics.hasEditable),
+    interruptionStats: normalizeInterruptionStats(metrics.interruptionStats)
   };
 }
 
@@ -346,8 +368,13 @@ function ingestMetrics(session, metrics) {
     repeatedActions: metrics.repeatedActions,
     scrollSpeed: metrics.scrollSpeed,
     tabSwitchesDelta: metrics.tabSwitchesDelta,
-    totalKeystrokes: session.aggregate.totalKeystrokes
+    totalKeystrokes: session.aggregate.totalKeystrokes,
+    isPageActive: metrics.isPageActive
   };
+
+  const previousPatternDetections = Number(session.interruptionStats?.patternDetections || 0);
+  session.interruptionStats = metrics.interruptionStats;
+  session.recentInterruptionPattern = Number(metrics.interruptionStats?.patternDetections || 0) > previousPatternDetections;
 }
 
 function classifyContext(metrics, tab) {
@@ -452,6 +479,7 @@ function detectIssue(session, metrics, context) {
   };
 
   const inactivityStrict =
+    metrics.isPageActive &&
     metrics.pauseDurationMs >= STRICT_INACTIVITY_MS &&
     metrics.idleDurationMs >= STRICT_INACTIVITY_MS &&
     metrics.keystrokesDelta === 0 &&
@@ -469,7 +497,10 @@ function detectIssue(session, metrics, context) {
         displayType: "Inactivity",
         score: Number(diagnostics.distractionScore.toFixed(2)),
         severity: "high",
-        reason: "You've been inactive for 60 seconds."
+        interruptionDetected: Boolean(session.recentInterruptionPattern),
+        reason: session.recentInterruptionPattern
+          ? "You’ve been interrupted multiple times."
+          : "You've been inactive for 60 seconds."
       },
       diagnostics
     };
@@ -610,6 +641,16 @@ function canEmitIntervention(session, issue) {
 
 function buildIntervention(issue, context, diagnostics) {
   if (issue.strategy === "inactivity_strict") {
+    const interruptionMessage = issue.interruptionDetected
+      ? "You’ve been interrupted multiple times."
+      : "You've been inactive for 60 seconds. You may be losing focus.";
+    const interruptionWhy = issue.interruptionDetected
+      ? "Pattern detected: stop -> resume -> stop. Your momentum is getting fragmented."
+      : "No typing, interaction, or activity was detected for 60 seconds.";
+    const interruptionNext = issue.interruptionDetected
+      ? "Lock back in now and protect the next 2 minutes without switching."
+      : "Lock back in for 2 minutes to regain momentum.";
+
     return {
       id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       ts: Date.now(),
@@ -622,11 +663,11 @@ function buildIntervention(issue, context, diagnostics) {
       activityType: context.activityType,
       reason: issue.reason,
       diagnostics,
-      title: "Distraction / Inactivity",
-      message: "You've been inactive for 60 seconds. You may be losing focus.",
-      what: "You've been inactive for 60 seconds. You may be losing focus.",
-      why: "No typing, interaction, or activity was detected for 60 seconds.",
-      nextAction: "Lock back in for 2 minutes to regain momentum.",
+      title: issue.interruptionDetected ? "Interruption Detector" : "Distraction / Inactivity",
+      message: interruptionMessage,
+      what: interruptionMessage,
+      why: interruptionWhy,
+      nextAction: interruptionNext,
       actions: ["lock_in_2m", "resume_task", "ignore"],
       actionPayloads: {
         lock_in_2m: "Start a 2-minute focus sprint and avoid switching tasks.",
@@ -748,6 +789,7 @@ function addTimeline(session, eventType, label, details) {
 
 async function persistState(tabId, session) {
   const key = `nudge_tab_${tabId}`;
+  const detailedSummary = `You lost focus ${session.interruptionStats?.lostFocusCount || 0} times, recovered ${session.interruptionStats?.recoveredCount || 0} times, and saved ~${session.interruptionStats?.savedMinutes || 0} minutes.`;
   await chrome.storage.local.set({
     [key]: {
       tabId,
@@ -765,7 +807,9 @@ async function persistState(tabId, session) {
       pendingIgnoredReminder: session.pendingIgnoredReminder,
       inactivityReminderStopped: session.inactivityReminderStopped,
       lastInactivityNotificationAt: session.lastInactivityNotificationAt || 0,
-      liveResultsUrl: LIVE_RESULTS_URL
+      liveResultsUrl: LIVE_RESULTS_URL,
+      interruptionStats: session.interruptionStats,
+      detailedSummary
     },
     nudge_last_tab: tabId,
     nudge_last_update: Date.now()
@@ -841,6 +885,10 @@ function clamp(value) {
 }
 
 function processIgnoredReminderFollowUp(session, metrics) {
+  if (!metrics.isPageActive) {
+    return;
+  }
+
   const userReturned =
     metrics.keystrokesDelta > 0 ||
     metrics.scrollDistance > 0 ||
@@ -911,14 +959,28 @@ function dispatchBrowserNotification(title, message) {
 }
 
 function maybeSendInactivityNotification(session, { message, label, details, force = false }) {
+  if (!session.lastMetrics?.isPageActive) {
+    return false;
+  }
+
   const now = Date.now();
   const lastSent = Number(session.lastInactivityNotificationAt || 0);
   if (!force && now - lastSent < INACTIVITY_NOTIFICATION_COOLDOWN_MS) {
     return false;
   }
 
-  dispatchBrowserNotification("Nudge Alert", message);
+  dispatchBrowserNotification(`${BRAND_NAME} Alert`, message);
   session.lastInactivityNotificationAt = now;
   addTimeline(session, "reminder_sent", label, details);
   return true;
+}
+
+function normalizeInterruptionStats(raw) {
+  const safe = raw && typeof raw === "object" ? raw : {};
+  return {
+    lostFocusCount: Math.max(0, numberOrZero(safe.lostFocusCount)),
+    recoveredCount: Math.max(0, numberOrZero(safe.recoveredCount)),
+    savedMinutes: Math.max(0, numberOrZero(safe.savedMinutes)),
+    patternDetections: Math.max(0, numberOrZero(safe.patternDetections))
+  };
 }

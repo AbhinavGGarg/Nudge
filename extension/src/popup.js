@@ -12,6 +12,7 @@ const el = {
   idle: document.getElementById("idle"),
   switches: document.getElementById("switches"),
   latest: document.getElementById("latest"),
+  detailedSummary: document.getElementById("detailed-summary"),
   timeline: document.getElementById("timeline"),
   resultsLink: document.getElementById("results-link")
 };
@@ -73,6 +74,7 @@ function render(state) {
     el.switches.textContent = "0";
     el.latest.className = "empty";
     el.latest.textContent = "No intervention yet.";
+    el.detailedSummary.textContent = "No summary yet.";
     el.timeline.className = "empty";
     el.timeline.textContent = "No events yet.";
     return;
@@ -107,6 +109,11 @@ function render(state) {
 
   if (state.liveResultsUrl && el.resultsLink) {
     el.resultsLink.href = state.liveResultsUrl;
+  }
+  if (el.detailedSummary) {
+    el.detailedSummary.textContent =
+      state.detailedSummary ||
+      `You lost focus ${(state.interruptionStats?.lostFocusCount || 0)} times, recovered ${(state.interruptionStats?.recoveredCount || 0)} times, and saved ~${(state.interruptionStats?.savedMinutes || 0)} minutes.`;
   }
 
   const latest = (state.interventions || [])[0];

@@ -1,4 +1,4 @@
-# Nudge
+# Tether
 
 Real-time AI learning intervention system that observes behavior, detects risk patterns, and intervenes live with context-aware guidance.
 
@@ -6,11 +6,11 @@ Real-time AI learning intervention system that observes behavior, detects risk p
 
 Procrastination is a huge unsolved problem that affects many high school and college students today. Most learning tools are passive and only react after performance drops.
 
-Nudge is built to intervene in the moment.
+Tether is built to intervene in the moment.
 
-## What Nudge Does
+## What Tether Does
 
-Nudge monitors live work behavior across coding, studying, writing, and browsing contexts, then detects:
+Tether monitors live work behavior across coding, studying, writing, and browsing contexts, then detects:
 
 - distraction / inactivity
 - procrastination patterns
@@ -19,7 +19,7 @@ When risk is detected, it triggers actionable interventions in real time.
 
 ## Why This Is Different
 
-Nudge is not a passive tutor chatbot.
+Tether is not a passive tutor chatbot.
 
 It is a behavior-first intervention system that:
 

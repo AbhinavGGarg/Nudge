@@ -1,5 +1,6 @@
 const NUDGE_TAG = "nudge-extension-root";
 const NUDGE_DOCK_TAG = "nudge-extension-dock";
+const BRAND_NAME = "Tether";
 const BLOCKED_MONITOR_PAGES = [
   { host: "accounts.google.com", pathPrefix: "/v3/signin" },
   { host: "accounts.google.com", pathPrefix: "/ServiceLogin" },
@@ -38,6 +39,14 @@ let dockButton;
 let dockPanel;
 let dockOpen = false;
 let noteTimerId = null;
+let currentPageKey = buildPageKey(window.location);
+let interruptionEvents = [];
+let interruptionStats = {
+  lostFocusCount: 0,
+  recoveredCount: 0,
+  savedMinutes: 0,
+  patternDetections: 0
+};
 
 boot();
 
@@ -59,6 +68,7 @@ function boot() {
 
   setInterval(checkInactivity, 1000);
   setInterval(publishMetrics, 2000);
+  setInterval(ensureUiPresence, 2000);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || !message.type) {
@@ -161,6 +171,7 @@ function registerActivity(clearIssue = true) {
   lastInteractionAt = now;
 
   if (clearIssue && issueActive) {
+    registerInterruptionResume("User resumed activity.");
     clearInactivityIssue();
   }
 
@@ -168,6 +179,12 @@ function registerActivity(clearIssue = true) {
 }
 
 function checkInactivity() {
+  const pageKey = buildPageKey(window.location);
+  if (pageKey !== currentPageKey) {
+    resetForPageChange(pageKey);
+    return;
+  }
+
   const idleMs = Date.now() - lastActivityTime;
   if (!issueActive && idleMs >= STRICT_INACTIVITY_MS) {
     triggerInactivityIssue(idleMs);
@@ -182,14 +199,19 @@ function checkInactivity() {
 }
 
 function triggerInactivityIssue(idleMs) {
+  interruptionStats.lostFocusCount += 1;
+  const interruptedAgain = registerInterruptionStop();
+
   issueActive = true;
   currentIssue = {
     id: `inactivity-${Date.now()}`,
     type: "inactivity",
     severity: "high",
-    title: "Distraction / Inactivity",
-    message: "You’ve been inactive for 60 seconds.",
-    nextAction: "Get back in for 2 minutes to regain focus.",
+    title: interruptedAgain ? "Interruption Detector" : "Distraction / Inactivity",
+    message: interruptedAgain ? "You’ve been interrupted multiple times." : "You’ve been inactive for 60 seconds.",
+    nextAction: interruptedAgain
+      ? "You stopped, resumed, and stopped again. Lock back in for 2 minutes to rebuild momentum."
+      : "Get back in for 2 minutes to regain focus.",
     idleMs
   };
   lastActionNote = "";
@@ -240,8 +262,12 @@ function handleIssueAction(action) {
 
   if (action === "lock_in_2m") {
     startLockInTimer(120);
+    registerInterruptionResume("2-minute lock-in started.");
+    interruptionStats.savedMinutes += 2;
     lastActionNote = "Lock-in started for 2 minutes.";
   } else if (action === "resume_task") {
+    registerInterruptionResume("Resumed current task.");
+    interruptionStats.savedMinutes += 1;
     lastActionNote = "Resumed. Keep momentum.";
   } else {
     lastActionNote = "Ignored. Monitoring resumed.";
@@ -292,8 +318,9 @@ function createDock() {
     "style",
     [
       "position:fixed",
-      "right:14px",
-      "bottom:14px",
+      "right:10px",
+      "top:50%",
+      "transform:translateY(-50%)",
       "z-index:2147483645",
       "display:grid",
       "justify-items:end",
@@ -307,7 +334,7 @@ function createDock() {
     "style",
     [
       "display:none",
-      "width:min(310px, calc(100vw - 24px))",
+      "width:min(330px, calc(100vw - 24px))",
       "padding:10px 12px",
       "border-radius:12px",
       "background:rgba(2,6,23,0.96)",
@@ -325,17 +352,17 @@ function createDock() {
     "style",
     [
       "border-radius:999px",
-      "border:1px solid rgba(14,165,233,0.45)",
+      "border:1px solid rgba(56,189,248,0.65)",
       "background:#0b1220",
-      "color:#bae6fd",
-      "padding:8px 12px",
-      "font-size:12px",
+      "color:#e0f2fe",
+      "padding:9px 14px",
+      "font-size:13px",
       "font-weight:700",
       "cursor:pointer",
-      "box-shadow:0 10px 22px rgba(2,6,23,0.35)"
+      "box-shadow:0 12px 24px rgba(2,6,23,0.45)"
     ].join(";")
   );
-  dockButton.textContent = "Nudge Live";
+  dockButton.textContent = `${BRAND_NAME} Live`;
   dockButton.addEventListener("click", () => {
     dockOpen = !dockOpen;
     renderDock();
@@ -357,18 +384,21 @@ function renderDock() {
 
   dockButton.style.borderColor = issueActive ? "rgba(248,113,113,0.65)" : "rgba(14,165,233,0.45)";
   dockButton.style.color = issueActive ? "#fecaca" : "#bae6fd";
-  dockButton.textContent = issueActive ? "Nudge Live • Alert" : "Nudge Live";
+  dockButton.textContent = issueActive ? `${BRAND_NAME} Live • Alert` : `${BRAND_NAME} Live`;
 
   dockPanel.style.display = dockOpen ? "block" : "none";
+  const detailedSummary = `You lost focus ${interruptionStats.lostFocusCount} times, recovered ${interruptionStats.recoveredCount} times, and saved ~${interruptionStats.savedMinutes} minutes.`;
   dockPanel.innerHTML = `
-    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Nudge Status</div>
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">${BRAND_NAME} Status</div>
+    <div><strong>Site:</strong> ${escapeHtml(window.location.hostname || "unknown")}</div>
     <div><strong>State:</strong> Live monitoring</div>
     <div><strong>Issue:</strong> ${escapeHtml(issueLabel)}</div>
     <div><strong>Idle:</strong> ${idleSeconds}s</div>
     ${lockLine ? `<div style="color:#86efac;margin-top:4px">${escapeHtml(lockLine)}</div>` : ""}
     ${lastActionNote ? `<div style="color:#86efac;margin-top:4px">${escapeHtml(lastActionNote)}</div>` : ""}
+    <div style="margin-top:8px;color:#bfdbfe">${escapeHtml(detailedSummary)}</div>
     <div style="margin-top:8px;color:#94a3b8">
-      Nudge interventions appear automatically after 60s inactivity.
+      ${BRAND_NAME} interventions appear automatically after 60s inactivity on this current site.
     </div>
   `;
 }
@@ -491,10 +521,14 @@ function publishMetrics() {
     keystrokesDelta,
     pageTitle: document.title,
     url: window.location.href,
+    pageHost: window.location.hostname,
+    pageKey: currentPageKey,
+    isPageActive: document.visibilityState === "visible" && document.hasFocus(),
     contextSample: `${document.title}\n${text.slice(0, 500)}`,
     pageTextSample: extractPageTextSample(),
     hasVideo: Boolean(document.querySelector("video")),
-    hasEditable: hasEditableSurface()
+    hasEditable: hasEditableSurface(),
+    interruptionStats
   };
 
   keystrokesDelta = 0;
@@ -504,6 +538,72 @@ function publishMetrics() {
   chrome.runtime.sendMessage({ type: "NUDGE_METRICS", metrics }, () => {
     void chrome.runtime?.lastError;
   });
+}
+
+function ensureUiPresence() {
+  if (shouldSkipMonitoringPage(window.location)) {
+    return;
+  }
+
+  if (!document.getElementById(NUDGE_DOCK_TAG)) {
+    createDock();
+  }
+  if (!document.getElementById(NUDGE_TAG)) {
+    createCenteredPopup();
+  }
+  renderDock();
+  if (issueActive) {
+    renderPopup();
+  }
+}
+
+function resetForPageChange(nextPageKey) {
+  currentPageKey = nextPageKey;
+  sessionStartedAt = Date.now();
+  lastInputAt = Date.now();
+  lastInteractionAt = Date.now();
+  lastActivityTime = Date.now();
+  keyEvents = [];
+  editEvents = [];
+  scrollEvents = [];
+  keystrokesDelta = 0;
+  tabSwitchesDelta = 0;
+  scrollDistanceDelta = 0;
+  lastScrollY = window.scrollY || 0;
+  previousText = "";
+  clearInactivityIssue();
+  renderDock();
+}
+
+function registerInterruptionStop() {
+  interruptionEvents.push("stop");
+  if (interruptionEvents.length > 6) {
+    interruptionEvents = interruptionEvents.slice(-6);
+  }
+
+  const lastThree = interruptionEvents.slice(-3).join(">");
+  const interruptedAgain = lastThree === "stop>resume>stop";
+  if (interruptedAgain) {
+    interruptionStats.patternDetections += 1;
+  }
+  return interruptedAgain;
+}
+
+function registerInterruptionResume(note = "") {
+  interruptionEvents.push("resume");
+  if (interruptionEvents.length > 6) {
+    interruptionEvents = interruptionEvents.slice(-6);
+  }
+  interruptionStats.recoveredCount += 1;
+  if (note) {
+    lastActionNote = note;
+  }
+}
+
+function buildPageKey(locationLike) {
+  const host = String(locationLike?.hostname || "").toLowerCase();
+  const path = String(locationLike?.pathname || "");
+  return `${host}${path}`;
 }
 
 function extractWorkingText() {

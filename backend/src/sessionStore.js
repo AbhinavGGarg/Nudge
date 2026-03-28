@@ -58,10 +58,16 @@ class SessionStore {
         scrollSpeed: 0,
         tabSwitchesDelta: 0,
         totalKeystrokes: 0
+      },
+      interruptionStats: {
+        lostFocusCount: 0,
+        recoveredCount: 0,
+        savedMinutes: 0,
+        patternDetections: 0
       }
     };
 
-    addTimeline(session, "session_started", "Live monitoring started", "Nudge session initialized");
+    addTimeline(session, "session_started", "Live monitoring started", "Tether session initialized");
     this.sessions.set(id, session);
     return session;
   }
@@ -120,6 +126,12 @@ class SessionStore {
 
     session.issueCounters[issue.type] = (session.issueCounters[issue.type] || 0) + 1;
     session.aggregate.totalDetections += 1;
+    if (issue.type === "inactivity") {
+      session.interruptionStats.lostFocusCount += 1;
+      if (issue.interruptionDetected) {
+        session.interruptionStats.patternDetections += 1;
+      }
+    }
     addTimeline(session, "issue_detected", `${capitalize(issue.type)} detected`, issue.reason);
   }
 
@@ -196,6 +208,15 @@ class SessionStore {
       target.improvementNote = `Focus improved by ${improvementPct}%`;
     }
 
+    if (action === "lock_in_2m") {
+      session.interruptionStats.recoveredCount += 1;
+      session.interruptionStats.savedMinutes += 2;
+    }
+    if (action === "resume_task") {
+      session.interruptionStats.recoveredCount += 1;
+      session.interruptionStats.savedMinutes += 1;
+    }
+
     addTimeline(session, "user_action", `User selected ${actionLabel(action)}`, target.title);
 
     return target;
@@ -245,6 +266,13 @@ class SessionStore {
       ? Number((successfulActions / session.interventions.length).toFixed(2))
       : 0;
 
+    const lostFocusCount = Number(session.interruptionStats?.lostFocusCount || 0);
+    const recoveredCount = Number(session.interruptionStats?.recoveredCount || 0);
+    const savedMinutes =
+      Number(session.interruptionStats?.savedMinutes || 0) ||
+      Math.max(0, Math.round((timeWastedMs / 60000) * interventionEffectiveness));
+    const detailedSummary = `You lost focus ${lostFocusCount} times, recovered ${recoveredCount} times, and saved ~${savedMinutes} minutes.`;
+
     return {
       sessionId: session.id,
       learnerName: session.learnerName,
@@ -257,6 +285,8 @@ class SessionStore {
       interventions: session.interventions,
       timeline: session.timeline,
       interventionEffectiveness,
+      interruptionStats: session.interruptionStats,
+      detailedSummary,
       behaviorSnapshot: computeBehaviorSnapshot(session),
       improvementSuggestions: buildImprovementSuggestions(session, contextBreakdown)
     };

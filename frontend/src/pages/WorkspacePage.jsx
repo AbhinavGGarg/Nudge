@@ -563,7 +563,7 @@ function WorkspacePage() {
       addBrowserNotificationEvent("reminder_sent", message, `Mode: ${browserNotifications.mode}`);
 
       if (browserNotificationPermission === "granted" && typeof Notification !== "undefined") {
-        const notification = new Notification("Nudge Reminder", {
+        const notification = new Notification("Tether Reminder", {
           body:
             active.type === "forgot_session"
               ? "You paused your session. Resume now?"
@@ -839,7 +839,7 @@ function WorkspacePage() {
     <main className="page-shell">
       <header className="topbar">
         <div>
-          <h1>Nudge</h1>
+          <h1>Tether</h1>
           <p>Context-aware real-time AI intervention system</p>
         </div>
         <div className="status-cluster">
@@ -866,7 +866,7 @@ function WorkspacePage() {
             <div className="landing-hero-copy">
               <h2>Real-time intervention for procrastination, distraction, and inactivity</h2>
               <p>
-                Nudge observes live behavior patterns and intervenes when momentum drops. It helps students and builders
+                Tether observes live behavior patterns and intervenes when momentum drops. It helps students and builders
                 recover focus in the moment instead of after performance already declines.
               </p>
               <div className="landing-kpis">
@@ -896,10 +896,10 @@ function WorkspacePage() {
 
           <section className="landing-grid">
             <article className="panel">
-              <h3>What Nudge Solves</h3>
+              <h3>What Tether Solves</h3>
               <p>
                 Procrastination and attention drift are still major unsolved problems in learning. Most tools only react
-                after results drop. Nudge acts during the session.
+                after results drop. Tether acts during the session.
               </p>
               <ul className="landing-list">
                 <li>Detects inactivity, distraction, and procrastination in real time.</li>
@@ -927,16 +927,16 @@ function WorkspacePage() {
             </article>
 
             <article className="panel landing-install">
-              <h3>Install & Try Nudge</h3>
+              <h3>Install & Try Tether</h3>
               <p>
-                Nudge now appears only when a real behavior issue is detected. If you are active, it stays quiet.
+                Tether now appears only when a real behavior issue is detected. If you are active, it stays quiet.
               </p>
               <ol className="landing-install-list">
                 <li>Download the extension zip from GitHub.</li>
                 <li>Open Chrome and go to `chrome://extensions`.</li>
                 <li>Turn on Developer mode, then click Load unpacked.</li>
                 <li>Select the `extension` folder from the downloaded repo.</li>
-                <li>Open any site, then stay inactive for 60 seconds to trigger Nudge.</li>
+                <li>Open any site, then stay inactive for 60 seconds to trigger Tether.</li>
               </ol>
               <div className="action-row landing-install-actions">
                 <a className="btn btn-primary" href={GITHUB_ZIP_URL} target="_blank" rel="noreferrer">

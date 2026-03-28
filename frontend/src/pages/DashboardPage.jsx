@@ -84,7 +84,7 @@ function DashboardPage() {
     <main className="page-shell">
       <header className="topbar">
         <div>
-          <h1>Nudge Live Results</h1>
+          <h1>Tether Live Results</h1>
           <p>Behavior intervention analytics for {summary.learnerName}</p>
         </div>
         <Link to="/" className="btn btn-primary">
@@ -104,6 +104,11 @@ function DashboardPage() {
         <Card title="Momentum Score" value={`${summary.behaviorSnapshot?.momentumScore || 0}%`} />
         <Card title="Clarity Score" value={`${summary.behaviorSnapshot?.clarityScore || 0}%`} />
         <Card title="Dominant Context" value={summary.contextBreakdown?.[0]?.context || "n/a"} />
+      </section>
+
+      <section className="panel">
+        <h3>Detailed Summary</h3>
+        <p>{summary.detailedSummary || "You lost focus 0 times, recovered 0 times, and saved ~0 minutes."}</p>
       </section>
 
       <section className="dashboard-grid">

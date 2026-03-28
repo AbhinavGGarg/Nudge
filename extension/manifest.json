@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Nudge Live Copilot",
+  "name": "Tether Live Copilot",
   "version": "0.2.0",
-  "description": "Nudge real-time behavioral intervention overlay across websites.",
+  "description": "Tether real-time behavioral intervention overlay across websites.",
   "permissions": ["storage", "tabs", "activeTab", "notifications"],
   "icons": {
     "128": "icons/nudge-128.png"
@@ -12,7 +12,7 @@
     "service_worker": "src/background.js"
   },
   "action": {
-    "default_title": "Nudge",
+    "default_title": "Tether",
     "default_popup": "src/popup.html"
   },
   "content_scripts": [
