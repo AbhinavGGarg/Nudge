@@ -6,6 +6,8 @@ const GRADE_OPTIONS = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F"];
 const GRADE_SLOT_COUNT = 6;
 const ASSESSMENT_SLOT_COUNT = 3;
 const RISK_LEVEL_ORDER = { Low: 1, Moderate: 2, High: 3 };
+const GITHUB_REPO_URL = "https://github.com/AbhinavGGarg/Nudge";
+const GITHUB_ZIP_URL = "https://github.com/AbhinavGGarg/Nudge/archive/refs/heads/main.zip";
 const SMART_REMINDER_DELAYS_MS = [0, 3 * 60 * 1000, 8 * 60 * 1000];
 const SMART_MODE_CONFIG = {
   Normal: { inactivityMs: 90000, lostFocusMs: 120000 },
@@ -936,6 +938,32 @@ function handleInterventionAction(intervention, action) {
                   <p>Deliver live actions and log measurable improvement in timeline and dashboard.</p>
                 </div>
               </div>
+            </article>
+
+            <article className="panel landing-install">
+              <h3>Install & Try Nudge</h3>
+              <p>
+                Nudge now appears only when a real behavior issue is detected. If you are active, it stays quiet.
+              </p>
+              <ol className="landing-install-list">
+                <li>Download the extension zip from GitHub.</li>
+                <li>Open Chrome and go to `chrome://extensions`.</li>
+                <li>Turn on Developer mode, then click Load unpacked.</li>
+                <li>Select the `extension` folder from the downloaded repo.</li>
+                <li>Open any site, then stay inactive for 60 seconds to trigger Nudge.</li>
+              </ol>
+              <div className="action-row landing-install-actions">
+                <a className="btn btn-primary" href={GITHUB_ZIP_URL} target="_blank" rel="noreferrer">
+                  Download Extension ZIP
+                </a>
+                <a className="btn btn-ghost" href={GITHUB_REPO_URL} target="_blank" rel="noreferrer">
+                  View GitHub Repo
+                </a>
+              </div>
+              <p className="monitor-note">
+                If Developer mode is blocked on your school-managed Chrome profile, use a personal Chrome profile to load
+                the extension.
+              </p>
             </article>
           </section>
         </>
