@@ -1,6 +1,7 @@
 import { CONTEXT_PROFILES } from "./knowledgeGraph.js";
 
 const STRICT_INACTIVITY_MS = 60 * 1000;
+const SECONDARY_INACTIVITY_MS = 150 * 1000;
 
 function normalizeMetrics(raw = {}) {
   return {
@@ -20,6 +21,7 @@ function normalizeMetrics(raw = {}) {
     pageTextSample: String(raw.pageTextSample || ""),
     pageTitle: String(raw.pageTitle || ""),
     url: String(raw.url || ""),
+    inactivityThresholdMs: numberOrZero(raw.inactivityThresholdMs),
     hasVideo: Boolean(raw.hasVideo),
     hasEditable: Boolean(raw.hasEditable)
   };
@@ -109,9 +111,10 @@ function detectIssue(session, metrics, context) {
     tabSwitchesDelta: metrics.tabSwitchesDelta
   };
 
+  const inactivityThresholdMs = getInactivityThresholdMs(session, metrics);
   const inactivityStrict =
-    metrics.pauseDurationMs >= STRICT_INACTIVITY_MS &&
-    metrics.idleDurationMs >= STRICT_INACTIVITY_MS &&
+    metrics.pauseDurationMs >= inactivityThresholdMs &&
+    metrics.idleDurationMs >= inactivityThresholdMs &&
     metrics.keystrokesDelta === 0 &&
     metrics.scrollDistance === 0 &&
     metrics.tabSwitchesDelta === 0;
@@ -126,7 +129,8 @@ function detectIssue(session, metrics, context) {
       displayType: "Inactivity",
       severity: "high",
       score: Number(diagnostics.distractionScore.toFixed(2)),
-      reason: "You've been inactive for 60 seconds.",
+      inactivityThresholdMs,
+      reason: `You've been inactive for ${Math.round(inactivityThresholdMs / 1000)} seconds.`,
       diagnostics
     };
   }
@@ -138,11 +142,11 @@ function detectIssue(session, metrics, context) {
   const noFreshActivity =
     metrics.keystrokesDelta === 0 && metrics.scrollDistance === 0 && metrics.tabSwitchesDelta === 0;
 
-  if (noFreshActivity && metrics.idleDurationMs < STRICT_INACTIVITY_MS) {
+  if (noFreshActivity && metrics.idleDurationMs < inactivityThresholdMs) {
     return null;
   }
 
-  if (metrics.idleDurationMs > STRICT_INACTIVITY_MS) {
+  if (metrics.idleDurationMs > inactivityThresholdMs) {
     return {
       type: "distraction",
       displayType: "Distraction",
@@ -270,6 +274,14 @@ function clamp(value) {
     return 0;
   }
   return Math.min(1, Math.max(0, value));
+}
+
+function getInactivityThresholdMs(session, metrics) {
+  const metricThreshold = numberOrZero(metrics?.inactivityThresholdMs);
+  if (metricThreshold >= STRICT_INACTIVITY_MS) {
+    return metricThreshold;
+  }
+  return (session?.issueCounters?.inactivity || 0) > 0 ? SECONDARY_INACTIVITY_MS : STRICT_INACTIVITY_MS;
 }
 
 function numberOrZero(value) {

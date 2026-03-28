@@ -39,7 +39,8 @@ It is a behavior-first intervention system that:
   - scroll behavior
   - time on task
 - Strict inactivity detection:
-  - 60s no activity trigger
+  - 60s first inactivity trigger
+  - ~150s follow-up inactivity threshold (2nd+ trigger)
   - "Distraction / Inactivity" intervention
   - 3-minute follow-up reminder when ignored
 - Live intervention actions:
@@ -72,7 +73,7 @@ It is a behavior-first intervention system that:
 ## Project Structure
 
 ```text
-Nudge/
+Tether/
   backend/
     src/
       server.js

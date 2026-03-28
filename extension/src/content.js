@@ -8,6 +8,7 @@ const BLOCKED_MONITOR_PAGES = [
 ];
 
 const STRICT_INACTIVITY_MS = 60 * 1000;
+const SECONDARY_INACTIVITY_MS = 150 * 1000;
 
 let sessionStartedAt = Date.now();
 let lastInputAt = Date.now();
@@ -169,11 +170,7 @@ function registerActivity(clearIssue = true) {
   const now = Date.now();
   lastActivityTime = now;
   lastInteractionAt = now;
-
-  if (clearIssue && issueActive) {
-    registerInterruptionResume("User resumed activity.");
-    clearInactivityIssue();
-  }
+  void clearIssue;
 
   renderDock();
 }
@@ -186,7 +183,8 @@ function checkInactivity() {
   }
 
   const idleMs = Date.now() - lastActivityTime;
-  if (!issueActive && idleMs >= STRICT_INACTIVITY_MS) {
+  const inactivityThresholdMs = getInactivityThresholdMs();
+  if (!issueActive && idleMs >= inactivityThresholdMs) {
     triggerInactivityIssue(idleMs);
     return;
   }
@@ -201,6 +199,7 @@ function checkInactivity() {
 function triggerInactivityIssue(idleMs) {
   interruptionStats.lostFocusCount += 1;
   const interruptedAgain = registerInterruptionStop();
+  const inactivitySeconds = Math.round(getInactivityThresholdMs() / 1000);
 
   issueActive = true;
   currentIssue = {
@@ -208,7 +207,9 @@ function triggerInactivityIssue(idleMs) {
     type: "inactivity",
     severity: "high",
     title: interruptedAgain ? "Interruption Detector" : "Distraction / Inactivity",
-    message: interruptedAgain ? "You’ve been interrupted multiple times." : "You’ve been inactive for 60 seconds.",
+    message: interruptedAgain
+      ? "You’ve been interrupted multiple times."
+      : `You’ve been inactive for ${inactivitySeconds} seconds.`,
     nextAction: interruptedAgain
       ? "You stopped, resumed, and stopped again. Lock back in for 2 minutes to rebuild momentum."
       : "Get back in for 2 minutes to regain focus.",
@@ -239,7 +240,9 @@ function triggerInactivityIssue(idleMs) {
         contextSample: `${document.title}\n${extractWorkingText().slice(0, 300)}`,
         pageTextSample: extractPageTextSample(),
         hasVideo: Boolean(document.querySelector("video")),
-        hasEditable: hasEditableSurface()
+        hasEditable: hasEditableSurface(),
+        inactivityThresholdMs: getInactivityThresholdMs(),
+        interruptionStats
       }
     },
     () => {
@@ -269,11 +272,17 @@ function handleIssueAction(action) {
     registerInterruptionResume("Resumed current task.");
     interruptionStats.savedMinutes += 1;
     lastActionNote = "Resumed. Keep momentum.";
+  } else if (action === "close_popup") {
+    lastActionNote = "Closed by user. Monitoring continues.";
   } else {
     lastActionNote = "Ignored. Monitoring resumed.";
   }
 
-  registerActivity(false);
+  if (action === "lock_in_2m" || action === "resume_task" || action === "close_popup") {
+    registerActivity(false);
+  } else {
+    lastInteractionAt = Date.now();
+  }
   issueActive = false;
   currentIssue = null;
   hidePopup();
@@ -398,7 +407,7 @@ function renderDock() {
     ${lastActionNote ? `<div style="color:#86efac;margin-top:4px">${escapeHtml(lastActionNote)}</div>` : ""}
     <div style="margin-top:8px;color:#bfdbfe">${escapeHtml(detailedSummary)}</div>
     <div style="margin-top:8px;color:#94a3b8">
-      ${BRAND_NAME} interventions appear automatically after 60s inactivity on this current site.
+      ${BRAND_NAME} interventions appear automatically after ${Math.round(getInactivityThresholdMs() / 1000)}s inactivity on this current site.
     </div>
   `;
 }
@@ -467,6 +476,7 @@ function renderPopup() {
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
         <button data-nudge-action="lock_in_2m" style="background:#22c55e;color:#052e16;border:none;border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:800;font-size:13px">Lock In (2 min)</button>
         <button data-nudge-action="resume_task" style="background:#0ea5e9;color:#f8fafc;border:none;border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px">Resume</button>
+        <button data-nudge-action="close_popup" style="background:rgba(148,163,184,0.18);color:#e2e8f0;border:1px solid rgba(148,163,184,0.4);border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px">Exit</button>
         <button data-nudge-action="ignore" style="background:rgba(148,163,184,0.25);color:#e2e8f0;border:1px solid rgba(148,163,184,0.4);border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px">Ignore</button>
       </div>
     </div>
@@ -524,6 +534,7 @@ function publishMetrics() {
     pageHost: window.location.hostname,
     pageKey: currentPageKey,
     isPageActive: document.visibilityState === "visible" && document.hasFocus(),
+    inactivityThresholdMs: getInactivityThresholdMs(),
     contextSample: `${document.title}\n${text.slice(0, 500)}`,
     pageTextSample: extractPageTextSample(),
     hasVideo: Boolean(document.querySelector("video")),
@@ -573,6 +584,10 @@ function resetForPageChange(nextPageKey) {
   previousText = "";
   clearInactivityIssue();
   renderDock();
+}
+
+function getInactivityThresholdMs() {
+  return interruptionStats.lostFocusCount >= 1 ? SECONDARY_INACTIVITY_MS : STRICT_INACTIVITY_MS;
 }
 
 function registerInterruptionStop() {

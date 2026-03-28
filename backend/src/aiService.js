@@ -70,7 +70,7 @@ async function generateIntervention({ issue, context, metrics, sessionSnapshot }
     return fallback;
   }
 
-  const prompt = `You are Nudge, a context-aware real-time intervention system.
+  const prompt = `You are Tether, a context-aware real-time intervention system.
 Return JSON only with keys:
 - title
 - message

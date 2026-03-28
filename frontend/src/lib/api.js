@@ -2,8 +2,9 @@ const API_BASE = import.meta.env.VITE_API_BASE || "";
 const REMOTE_MODE = Boolean(API_BASE);
 const BRAND_NAME = "Tether";
 
-const LOCAL_SESSION_PREFIX = "nudge:context-session:";
+const LOCAL_SESSION_PREFIX = "tether:context-session:";
 const STRICT_INACTIVITY_MS = 60 * 1000;
+const SECONDARY_INACTIVITY_MS = 150 * 1000;
 
 const ISSUE_COOLDOWN_MS = {
   procrastination: 90000,
@@ -343,6 +344,7 @@ function normalizeMetrics(raw = {}) {
     pageTitle: String(raw.pageTitle || document.title || ""),
     url: String(raw.url || window.location.href || ""),
     isPageActive: typeof raw.isPageActive === "boolean" ? raw.isPageActive : document.visibilityState === "visible",
+    inactivityThresholdMs: numberOrZero(raw.inactivityThresholdMs),
     contextSample: String(raw.contextSample || ""),
     pageTextSample: String(raw.pageTextSample || ""),
     hasVideo: Boolean(raw.hasVideo),
@@ -461,10 +463,11 @@ function detectIssue(session, metrics, context) {
     tabSwitchesDelta: metrics.tabSwitchesDelta
   };
 
+  const inactivityThresholdMs = getInactivityThresholdMs(session, metrics);
   const inactivityStrict =
     metrics.isPageActive &&
-    metrics.pauseDurationMs >= STRICT_INACTIVITY_MS &&
-    metrics.idleDurationMs >= STRICT_INACTIVITY_MS &&
+    metrics.pauseDurationMs >= inactivityThresholdMs &&
+    metrics.idleDurationMs >= inactivityThresholdMs &&
     metrics.keystrokesDelta === 0 &&
     metrics.scrollDistance === 0 &&
     metrics.tabSwitchesDelta === 0;
@@ -480,10 +483,11 @@ function detectIssue(session, metrics, context) {
         displayType: "Inactivity",
         score: Number(diagnostics.distractionScore.toFixed(2)),
         severity: "high",
+        inactivityThresholdMs,
         interruptionDetected: Boolean(session.recentInterruptionPattern),
         reason: session.recentInterruptionPattern
           ? "You’ve been interrupted multiple times."
-          : "You've been inactive for 60 seconds."
+          : `You've been inactive for ${Math.round(inactivityThresholdMs / 1000)} seconds.`
       },
       diagnostics
     };
@@ -498,11 +502,11 @@ function detectIssue(session, metrics, context) {
     metrics.scrollDistance === 0 &&
     metrics.tabSwitchesDelta === 0;
 
-  if (noFreshActivity && metrics.idleDurationMs < STRICT_INACTIVITY_MS) {
+  if (noFreshActivity && metrics.idleDurationMs < inactivityThresholdMs) {
     return { issue: null, diagnostics };
   }
 
-  if (metrics.idleDurationMs > STRICT_INACTIVITY_MS) {
+  if (metrics.idleDurationMs > inactivityThresholdMs) {
     return {
       issue: {
         type: "distraction",
@@ -618,12 +622,13 @@ function canEmitIntervention(session, issue) {
 
 function buildIntervention(issue, context, diagnostics) {
   if (issue.strategy === "inactivity_strict") {
+    const inactivitySeconds = Math.round(numberOrZero(issue.inactivityThresholdMs) / 1000) || 60;
     const interruptionMessage = issue.interruptionDetected
       ? "You’ve been interrupted multiple times."
-      : "You've been inactive for 60 seconds. You may be losing focus.";
+      : `You've been inactive for ${inactivitySeconds} seconds. You may be losing focus.`;
     const interruptionWhy = issue.interruptionDetected
       ? "Pattern detected: stop -> resume -> stop. Your momentum is getting fragmented."
-      : "No typing, interaction, or activity was detected for 60 seconds.";
+      : `No typing, interaction, or activity was detected for ${inactivitySeconds} seconds.`;
     const interruptionNext = issue.interruptionDetected
       ? "Lock back in now and protect the next 2 minutes without switching."
       : "Lock back in for 2 minutes to regain momentum.";
@@ -1071,6 +1076,14 @@ function normalizeInterruptionStats(raw) {
     savedMinutes: Math.max(0, numberOrZero(safe.savedMinutes)),
     patternDetections: Math.max(0, numberOrZero(safe.patternDetections))
   };
+}
+
+function getInactivityThresholdMs(session, metrics) {
+  const metricThreshold = numberOrZero(metrics?.inactivityThresholdMs);
+  if (metricThreshold >= STRICT_INACTIVITY_MS) {
+    return metricThreshold;
+  }
+  return (session?.issueCounters?.inactivity || 0) > 0 ? SECONDARY_INACTIVITY_MS : STRICT_INACTIVITY_MS;
 }
 
 function sanitizeSessionState(session) {

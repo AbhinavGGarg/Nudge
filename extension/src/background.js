@@ -3,6 +3,7 @@ const tabSessions = new Map();
 const LIVE_RESULTS_URL = "https://nudge-frontend-ten.vercel.app";
 const BRAND_NAME = "Tether";
 const STRICT_INACTIVITY_MS = 60 * 1000;
+const SECONDARY_INACTIVITY_MS = 150 * 1000;
 const INACTIVITY_NOTIFICATION_COOLDOWN_MS = 90 * 1000;
 
 const SESSION_COOLDOWN_MS = {
@@ -125,15 +126,15 @@ async function handleMetricsMessage(message, sender) {
       session.recentInterruptionPattern = false;
     }
 
-    if (issue.strategy === "inactivity_strict") {
-      maybeSendInactivityNotification(session, {
-        message: "You stopped working. Get back in for 2 minutes.",
-        label: "Reminder sent: Resume session",
-        details: "Inactivity reminder notification triggered."
-      });
-    }
-
     if (canEmitIntervention(session, issue)) {
+      if (issue.strategy === "inactivity_strict") {
+        maybeSendInactivityNotification(session, {
+          message: "You stopped working. Get back in for 2 minutes.",
+          label: "Reminder sent: Resume session",
+          details: "Inactivity reminder notification triggered."
+        });
+      }
+
       intervention = buildIntervention(issue, context, detection.diagnostics);
       session.interventions.unshift(intervention);
       session.interventions = session.interventions.slice(0, 20);
@@ -348,6 +349,7 @@ function normalizeMetrics(metrics, tab) {
     pageHost: String(metrics.pageHost || domainFromUrl(metrics.url || tab?.url || "")),
     pageKey: String(metrics.pageKey || ""),
     isPageActive: Boolean(metrics.isPageActive),
+    inactivityThresholdMs: numberOrZero(metrics.inactivityThresholdMs),
     hasVideo: Boolean(metrics.hasVideo),
     hasEditable: Boolean(metrics.hasEditable),
     interruptionStats: normalizeInterruptionStats(metrics.interruptionStats)
@@ -478,10 +480,11 @@ function detectIssue(session, metrics, context) {
     tabSwitchesDelta: metrics.tabSwitchesDelta
   };
 
+  const inactivityThresholdMs = getInactivityThresholdMs(session, metrics);
   const inactivityStrict =
     metrics.isPageActive &&
-    metrics.pauseDurationMs >= STRICT_INACTIVITY_MS &&
-    metrics.idleDurationMs >= STRICT_INACTIVITY_MS &&
+    metrics.pauseDurationMs >= inactivityThresholdMs &&
+    metrics.idleDurationMs >= inactivityThresholdMs &&
     metrics.keystrokesDelta === 0 &&
     metrics.scrollDistance === 0 &&
     metrics.tabSwitchesDelta === 0;
@@ -497,10 +500,11 @@ function detectIssue(session, metrics, context) {
         displayType: "Inactivity",
         score: Number(diagnostics.distractionScore.toFixed(2)),
         severity: "high",
+        inactivityThresholdMs,
         interruptionDetected: Boolean(session.recentInterruptionPattern),
         reason: session.recentInterruptionPattern
           ? "You’ve been interrupted multiple times."
-          : "You've been inactive for 60 seconds."
+          : `You've been inactive for ${Math.round(inactivityThresholdMs / 1000)} seconds.`
       },
       diagnostics
     };
@@ -515,11 +519,11 @@ function detectIssue(session, metrics, context) {
     metrics.scrollDistance === 0 &&
     metrics.tabSwitchesDelta === 0;
 
-  if (noFreshActivity && metrics.idleDurationMs < STRICT_INACTIVITY_MS) {
+  if (noFreshActivity && metrics.idleDurationMs < inactivityThresholdMs) {
     return { issue: null, diagnostics };
   }
 
-  if (metrics.idleDurationMs > STRICT_INACTIVITY_MS) {
+  if (metrics.idleDurationMs > inactivityThresholdMs) {
     return {
       issue: {
         type: "distraction",
@@ -641,12 +645,13 @@ function canEmitIntervention(session, issue) {
 
 function buildIntervention(issue, context, diagnostics) {
   if (issue.strategy === "inactivity_strict") {
+    const inactivitySeconds = Math.round(numberOrZero(issue.inactivityThresholdMs) / 1000) || 60;
     const interruptionMessage = issue.interruptionDetected
       ? "You’ve been interrupted multiple times."
-      : "You've been inactive for 60 seconds. You may be losing focus.";
+      : `You've been inactive for ${inactivitySeconds} seconds. You may be losing focus.`;
     const interruptionWhy = issue.interruptionDetected
       ? "Pattern detected: stop -> resume -> stop. Your momentum is getting fragmented."
-      : "No typing, interaction, or activity was detected for 60 seconds.";
+      : `No typing, interaction, or activity was detected for ${inactivitySeconds} seconds.`;
     const interruptionNext = issue.interruptionDetected
       ? "Lock back in now and protect the next 2 minutes without switching."
       : "Lock back in for 2 minutes to regain momentum.";
@@ -983,4 +988,12 @@ function normalizeInterruptionStats(raw) {
     savedMinutes: Math.max(0, numberOrZero(safe.savedMinutes)),
     patternDetections: Math.max(0, numberOrZero(safe.patternDetections))
   };
+}
+
+function getInactivityThresholdMs(session, metrics) {
+  const metricThreshold = numberOrZero(metrics?.inactivityThresholdMs);
+  if (metricThreshold >= STRICT_INACTIVITY_MS) {
+    return metricThreshold;
+  }
+  return (session?.issueCounters?.inactivity || 0) > 0 ? SECONDARY_INACTIVITY_MS : STRICT_INACTIVITY_MS;
 }

@@ -840,7 +840,7 @@ function WorkspacePage() {
       <header className="topbar">
         <div>
           <h1>Tether</h1>
-          <p>Context-aware real-time AI intervention system</p>
+          <p>Catch drift early. Recover focus instantly.</p>
         </div>
         <div className="status-cluster">
           <span className={`status-pill ${connected ? "online" : "offline"}`}>
