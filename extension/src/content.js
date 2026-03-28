@@ -1,4 +1,5 @@
 const NUDGE_TAG = "nudge-extension-root";
+const NUDGE_DOCK_TAG = "nudge-extension-dock";
 const BLOCKED_MONITOR_PAGES = [
   { host: "accounts.google.com", pathPrefix: "/v3/signin" },
   { host: "accounts.google.com", pathPrefix: "/ServiceLogin" },
@@ -32,6 +33,10 @@ let lockInRemainingSec = 0;
 let overlay;
 let overlayCard;
 let overlayBody;
+let dock;
+let dockButton;
+let dockPanel;
+let dockOpen = false;
 let noteTimerId = null;
 
 boot();
@@ -42,6 +47,8 @@ function boot() {
   }
 
   createCenteredPopup();
+  createDock();
+  renderDock();
 
   document.addEventListener("mousemove", onMouseMove, true);
   document.addEventListener("keydown", onKeyDown, true);
@@ -156,6 +163,8 @@ function registerActivity(clearIssue = true) {
   if (clearIssue && issueActive) {
     clearInactivityIssue();
   }
+
+  renderDock();
 }
 
 function checkInactivity() {
@@ -168,6 +177,8 @@ function checkInactivity() {
   if (issueActive) {
     renderPopup();
   }
+
+  renderDock();
 }
 
 function triggerInactivityIssue(idleMs) {
@@ -183,6 +194,7 @@ function triggerInactivityIssue(idleMs) {
   };
   lastActionNote = "";
   renderPopup();
+  renderDock();
 
   chrome.runtime.sendMessage(
     {
@@ -218,6 +230,7 @@ function clearInactivityIssue() {
   issueActive = false;
   currentIssue = null;
   hidePopup();
+  renderDock();
 }
 
 function handleIssueAction(action) {
@@ -238,12 +251,14 @@ function handleIssueAction(action) {
   issueActive = false;
   currentIssue = null;
   hidePopup();
+  renderDock();
 
   if (noteTimerId) {
     clearTimeout(noteTimerId);
   }
   noteTimerId = setTimeout(() => {
     lastActionNote = "";
+    renderDock();
   }, 5000);
 }
 
@@ -261,7 +276,101 @@ function startLockInTimer(seconds) {
       lockInRemainingSec = 0;
       lastActionNote = "2-minute lock-in complete. Focus restored.";
     }
+    renderDock();
   }, 1000);
+}
+
+function createDock() {
+  const existing = document.getElementById(NUDGE_DOCK_TAG);
+  if (existing) {
+    existing.remove();
+  }
+
+  dock = document.createElement("div");
+  dock.id = NUDGE_DOCK_TAG;
+  dock.setAttribute(
+    "style",
+    [
+      "position:fixed",
+      "right:14px",
+      "bottom:14px",
+      "z-index:2147483645",
+      "display:grid",
+      "justify-items:end",
+      "gap:8px",
+      "font-family:Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    ].join(";")
+  );
+
+  dockPanel = document.createElement("div");
+  dockPanel.setAttribute(
+    "style",
+    [
+      "display:none",
+      "width:min(310px, calc(100vw - 24px))",
+      "padding:10px 12px",
+      "border-radius:12px",
+      "background:rgba(2,6,23,0.96)",
+      "border:1px solid rgba(14,165,233,0.38)",
+      "box-shadow:0 14px 30px rgba(2,6,23,0.45)",
+      "color:#e2e8f0",
+      "font-size:12px",
+      "line-height:1.45"
+    ].join(";")
+  );
+
+  dockButton = document.createElement("button");
+  dockButton.type = "button";
+  dockButton.setAttribute(
+    "style",
+    [
+      "border-radius:999px",
+      "border:1px solid rgba(14,165,233,0.45)",
+      "background:#0b1220",
+      "color:#bae6fd",
+      "padding:8px 12px",
+      "font-size:12px",
+      "font-weight:700",
+      "cursor:pointer",
+      "box-shadow:0 10px 22px rgba(2,6,23,0.35)"
+    ].join(";")
+  );
+  dockButton.textContent = "Nudge Live";
+  dockButton.addEventListener("click", () => {
+    dockOpen = !dockOpen;
+    renderDock();
+  });
+
+  dock.appendChild(dockPanel);
+  dock.appendChild(dockButton);
+  document.documentElement.appendChild(dock);
+}
+
+function renderDock() {
+  if (!dock || !dockButton || !dockPanel) {
+    return;
+  }
+
+  const idleSeconds = Math.floor((Date.now() - lastActivityTime) / 1000);
+  const issueLabel = issueActive && currentIssue ? "Inactivity detected" : "No active issue";
+  const lockLine = lockInRemainingSec > 0 ? `${lockInRemainingSec}s left in 2-minute lock-in.` : "";
+
+  dockButton.style.borderColor = issueActive ? "rgba(248,113,113,0.65)" : "rgba(14,165,233,0.45)";
+  dockButton.style.color = issueActive ? "#fecaca" : "#bae6fd";
+  dockButton.textContent = issueActive ? "Nudge Live • Alert" : "Nudge Live";
+
+  dockPanel.style.display = dockOpen ? "block" : "none";
+  dockPanel.innerHTML = `
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Nudge Status</div>
+    <div><strong>State:</strong> Live monitoring</div>
+    <div><strong>Issue:</strong> ${escapeHtml(issueLabel)}</div>
+    <div><strong>Idle:</strong> ${idleSeconds}s</div>
+    ${lockLine ? `<div style="color:#86efac;margin-top:4px">${escapeHtml(lockLine)}</div>` : ""}
+    ${lastActionNote ? `<div style="color:#86efac;margin-top:4px">${escapeHtml(lastActionNote)}</div>` : ""}
+    <div style="margin-top:8px;color:#94a3b8">
+      Nudge interventions appear automatically after 60s inactivity.
+    </div>
+  `;
 }
 
 function createCenteredPopup() {
