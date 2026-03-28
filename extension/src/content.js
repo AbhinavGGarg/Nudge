@@ -1,5 +1,10 @@
 const NUDGE_TAG = "nudge-extension-root";
 const LIVE_RESULTS_FALLBACK = "https://nudge-frontend-ten.vercel.app";
+const BLOCKED_MONITOR_PAGES = [
+  { host: "accounts.google.com", pathPrefix: "/v3/signin" },
+  { host: "accounts.google.com", pathPrefix: "/ServiceLogin" },
+  { host: "accounts.google.com", pathPrefix: "/signin" }
+];
 
 let sessionStartedAt = Date.now();
 let lastInputAt = Date.now();
@@ -62,6 +67,10 @@ let reopenChip;
 boot();
 
 function boot() {
+  if (shouldSkipMonitoringPage(window.location)) {
+    return;
+  }
+
   createOverlay();
 
   document.addEventListener("keydown", onKeyDown, true);
@@ -76,7 +85,7 @@ function boot() {
     }
 
     if (message.type === "NUDGE_INTERVENTION") {
-      if (focusTimer.running) {
+      if (focusTimer?.running) {
         sendResponse({ ok: true, ignored: true });
         return;
       }
@@ -84,7 +93,7 @@ function boot() {
       lastIntervention = message.intervention || null;
       currentSignal = message.signal || currentSignal;
       currentContext = message.context || currentContext;
-      recentTimeline = message.timeline || recentTimeline;
+      recentTimeline = normalizeTimeline(message.timeline, recentTimeline);
       actionDetail = "";
       renderOverlay();
       sendResponse({ ok: true });
@@ -99,7 +108,12 @@ function onKeyDown(event) {
     return;
   }
 
-  const trackable = event.key.length === 1 || ["Backspace", "Delete", "Enter", "Tab"].includes(event.key);
+  const safeKey = typeof event.key === "string" ? event.key : "";
+  if (!safeKey) {
+    return;
+  }
+
+  const trackable = safeKey.length === 1 || ["Backspace", "Delete", "Enter", "Tab"].includes(safeKey);
   if (!trackable) {
     return;
   }
@@ -111,7 +125,7 @@ function onKeyDown(event) {
   keystrokesDelta += 1;
   totalKeystrokes += 1;
 
-  if (event.key === "Backspace" || event.key === "Delete") {
+  if (safeKey === "Backspace" || safeKey === "Delete") {
     editEvents.push({ ts: now, type: "delete" });
   }
 }
@@ -125,7 +139,7 @@ function onInput(event) {
   lastInputAt = now;
   lastInteractionAt = now;
 
-  const text = extractWorkingText();
+  const text = String(extractWorkingText() || "");
   if (text.length > previousText.length) {
     editEvents.push({ ts: now, type: "insert" });
   } else if (text.length < previousText.length) {
@@ -165,7 +179,7 @@ function publishMetrics() {
   editEvents = editEvents.filter((entry) => entry.ts >= twentySec);
   scrollEvents = scrollEvents.filter((entry) => entry.ts >= tenSec);
 
-  const text = extractWorkingText();
+  const text = String(extractWorkingText() || "");
   const pageTextSample = extractPageTextSample();
 
   const pauseDurationMs = now - lastInputAt;
@@ -202,6 +216,9 @@ function publishMetrics() {
   scrollDistanceDelta = 0;
 
   chrome.runtime.sendMessage({ type: "NUDGE_METRICS", metrics }, (response) => {
+    if (chrome.runtime?.lastError) {
+      return;
+    }
     if (!response || !response.ok) {
       return;
     }
@@ -212,10 +229,10 @@ function publishMetrics() {
     if (response.context) {
       currentContext = response.context;
     }
-    if (response.timeline) {
-      recentTimeline = response.timeline;
+    if (response.timeline !== undefined) {
+      recentTimeline = normalizeTimeline(response.timeline, recentTimeline);
     }
-    if (response.liveResultsUrl) {
+    if (typeof response.liveResultsUrl === "string" && response.liveResultsUrl.trim()) {
       resultsUrl = response.liveResultsUrl;
     }
 
@@ -256,6 +273,10 @@ function handleInterventionAction(action) {
       action
     },
     (response) => {
+      if (chrome.runtime?.lastError) {
+        renderOverlay();
+        return;
+      }
       if (!response || !response.ok) {
         renderOverlay();
         return;
@@ -267,13 +288,13 @@ function handleInterventionAction(action) {
       if (response.context) {
         currentContext = response.context;
       }
-      if (response.timeline) {
-        recentTimeline = response.timeline;
+      if (response.timeline !== undefined) {
+        recentTimeline = normalizeTimeline(response.timeline, recentTimeline);
       }
       if (response.intervention) {
         lastIntervention = response.intervention;
       }
-      if (response.liveResultsUrl) {
+      if (typeof response.liveResultsUrl === "string" && response.liveResultsUrl.trim()) {
         resultsUrl = response.liveResultsUrl;
       }
 
@@ -527,8 +548,9 @@ function renderOverlay() {
     `
     : `<div style="margin-top:10px;color:#94a3b8">Monitoring behavior. Interventions appear when risk patterns are detected.</div>`;
 
-  const timelineHtml = recentTimeline.length
-    ? recentTimeline
+  const timeline = normalizeTimeline(recentTimeline, []);
+  const timelineHtml = timeline.length
+    ? timeline
         .slice(0, 5)
         .map(
           (item) => `
@@ -646,11 +668,11 @@ function extractWorkingText() {
   const active = document.activeElement;
 
   if (active && isTextLikeInput(active)) {
-    return (active.value || "").slice(0, 6000);
+    return String(active.value || "").slice(0, 6000);
   }
 
   if (active && active.isContentEditable) {
-    return (active.textContent || "").slice(0, 6000);
+    return String(active.textContent || "").slice(0, 6000);
   }
 
   const textareas = Array.from(document.querySelectorAll("textarea"))
@@ -658,7 +680,7 @@ function extractWorkingText() {
     .sort((a, b) => (b.value?.length || 0) - (a.value?.length || 0));
 
   if (textareas[0]) {
-    return (textareas[0].value || "").slice(0, 6000);
+    return String(textareas[0].value || "").slice(0, 6000);
   }
 
   return "";
@@ -720,6 +742,23 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function shouldSkipMonitoringPage(locationLike) {
+  const host = String(locationLike?.hostname || "").toLowerCase();
+  const path = String(locationLike?.pathname || "");
+
+  return BLOCKED_MONITOR_PAGES.some((rule) => host === rule.host && path.startsWith(rule.pathPrefix));
+}
+
+function normalizeTimeline(value, fallback) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (Array.isArray(fallback)) {
+    return fallback;
+  }
+  return [];
 }
 
 function buildActionButtons(intervention, timerRunning) {
