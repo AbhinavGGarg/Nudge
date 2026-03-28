@@ -436,6 +436,21 @@ body {
   grid-column: 1 / -1;
 }
 
+.assessment-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.assessment-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
 .grade-slots-grid {
   display: grid;
   gap: 10px;
@@ -703,6 +718,10 @@ body {
   }
 
   .grade-slots-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .assessment-grid {
     grid-template-columns: 1fr;
   }
 
