@@ -53,10 +53,10 @@ It is a behavior-first intervention system that:
   - risk scoring and trend
   - outcome prediction
   - recovery actions
-- Smart Nudges module:
-  - notification mode control
+- Browser notification controls:
+  - notification mode (Normal / Focus / Chill)
   - reminder log
-  - SMS reminder simulation
+  - browser permission status
 - Session dashboard:
   - intervention history
   - timeline
@@ -168,8 +168,7 @@ The extension in `extension/` can:
 4. Select the `extension` folder
 5. Reload any target tab
 
-## Notification + SMS Notes
+## Notification Notes
 
 - Browser notifications are real when permission is granted.
-- SMS is currently a simulation log (for hackathon demo flow).
-- Production SMS can be added with Twilio in a backend worker.
+- Reminder sequence supports 1st alert immediately, then follow-ups at 3 and 8 minutes.

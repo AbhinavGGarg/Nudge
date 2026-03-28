@@ -560,17 +560,7 @@ body {
   margin-top: 10px;
 }
 
-.smart-settings-card {
-  margin-top: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.9);
-  display: grid;
-  gap: 10px;
-}
-
-.smart-toggle {
+.notification-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -580,7 +570,7 @@ body {
   color: #0f172a;
 }
 
-.smart-toggle input {
+.notification-toggle input {
   width: 18px;
   height: 18px;
 }

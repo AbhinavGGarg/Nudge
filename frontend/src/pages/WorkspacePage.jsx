@@ -8,8 +8,8 @@ const ASSESSMENT_SLOT_COUNT = 3;
 const RISK_LEVEL_ORDER = { Low: 1, Moderate: 2, High: 3 };
 const GITHUB_REPO_URL = "https://github.com/AbhinavGGarg/Nudge";
 const GITHUB_ZIP_URL = "https://github.com/AbhinavGGarg/Nudge/archive/refs/heads/main.zip";
-const SMART_REMINDER_DELAYS_MS = [0, 3 * 60 * 1000, 8 * 60 * 1000];
-const SMART_MODE_CONFIG = {
+const REMINDER_DELAYS_MS = [0, 3 * 60 * 1000, 8 * 60 * 1000];
+const NOTIFICATION_MODE_CONFIG = {
   Normal: { inactivityMs: 90000, lostFocusMs: 120000 },
   Focus: { inactivityMs: 65000, lostFocusMs: 90000 },
   Chill: { inactivityMs: 120000, lostFocusMs: 150000 }
@@ -41,18 +41,16 @@ function WorkspacePage() {
   const [focusModeRunning, setFocusModeRunning] = useState(false);
   const [focusModeSeconds, setFocusModeSeconds] = useState(60);
   const [focusModeDuration, setFocusModeDuration] = useState(60);
-  const [smartNudges, setSmartNudges] = useState({
-    enabled: false,
-    mode: "Normal",
-    phoneNumber: "",
-    smsEnabled: false
+  const [browserNotifications, setBrowserNotifications] = useState({
+    enabled: true,
+    mode: "Normal"
   });
-  const [smartNudgeStatus, setSmartNudgeStatus] = useState("Smart Nudges are off.");
-  const [smartNudgePermission, setSmartNudgePermission] = useState(
+  const [browserNotificationStatus, setBrowserNotificationStatus] = useState("Browser notifications are on.");
+  const [browserNotificationPermission, setBrowserNotificationPermission] = useState(
     typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
   );
-  const [reminderLogs, setReminderLogs] = useState([]);
-  const [nudgeEvents, setNudgeEvents] = useState([]);
+  const [notificationLogs, setNotificationLogs] = useState([]);
+  const [notificationEvents, setNotificationEvents] = useState([]);
 
   const [context, setContext] = useState({
     domain: window.location.hostname,
@@ -95,7 +93,7 @@ function WorkspacePage() {
   const lastInteractionRef = useRef(Date.now());
   const previousRiskScoreRef = useRef(null);
   const previousRiskLevelRef = useRef(null);
-  const smartReminderRef = useRef({ active: null });
+  const reminderSequenceRef = useRef({ active: null });
   const notificationRequestedRef = useRef(false);
 
   const keyEventsRef = useRef([]);
@@ -131,14 +129,14 @@ function WorkspacePage() {
   );
 
   const combinedTimeline = useMemo(() => {
-    return [...timeline, ...riskEvents, ...nudgeEvents]
+    return [...timeline, ...riskEvents, ...notificationEvents]
       .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
       .slice(0, 12);
-  }, [timeline, riskEvents, nudgeEvents]);
+  }, [timeline, riskEvents, notificationEvents]);
 
   const enrichedActiveIntervention = useMemo(
-    () => attachRiskToIntervention(activeIntervention, riskState, smartNudges, gradesInput.upcomingAssessments),
-    [activeIntervention, riskState, smartNudges, gradesInput.upcomingAssessments]
+    () => attachRiskToIntervention(activeIntervention, riskState, browserNotifications, gradesInput.upcomingAssessments),
+    [activeIntervention, riskState, browserNotifications, gradesInput.upcomingAssessments]
   );
 
   const addRiskTimelineEvent = useCallback((eventType, label, details) => {
@@ -156,7 +154,7 @@ function WorkspacePage() {
     );
   }, []);
 
-  const addSmartNudgeEvent = useCallback((eventType, label, details) => {
+  const addBrowserNotificationEvent = useCallback((eventType, label, details) => {
     const entry = {
       id: `nudge-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       ts: Date.now(),
@@ -165,8 +163,8 @@ function WorkspacePage() {
       details
     };
 
-    setReminderLogs((prev) => [entry, ...prev].slice(0, 40));
-    setNudgeEvents((prev) => [entry, ...prev].slice(0, 40));
+    setNotificationLogs((prev) => [entry, ...prev].slice(0, 40));
+    setNotificationEvents((prev) => [entry, ...prev].slice(0, 40));
   }, []);
 
   async function handleCreateSession() {
@@ -230,10 +228,12 @@ function WorkspacePage() {
         courseGrades: buildEmptyCourseGrades()
       });
       setPortalStatus("");
-      setSmartNudgeStatus("Smart Nudges are off.");
-      setReminderLogs([]);
-      setNudgeEvents([]);
-      smartReminderRef.current = { active: null };
+      setBrowserNotificationStatus(
+        browserNotifications.enabled ? `Browser notifications running in ${browserNotifications.mode} mode.` : "Browser notifications are off."
+      );
+      setNotificationLogs([]);
+      setNotificationEvents([]);
+      reminderSequenceRef.current = { active: null };
       setActiveTab("live");
     } catch {
       setStartError("Could not start session. Try again.");
@@ -455,27 +455,27 @@ function WorkspacePage() {
 
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
-      setSmartNudgePermission("unsupported");
+      setBrowserNotificationPermission("unsupported");
       return;
     }
 
-    setSmartNudgePermission(Notification.permission);
-    if (!smartNudges.enabled) {
+    setBrowserNotificationPermission(Notification.permission);
+    if (!browserNotifications.enabled) {
       return;
     }
 
     if (!notificationRequestedRef.current && Notification.permission === "default") {
       notificationRequestedRef.current = true;
       Notification.requestPermission().then((permission) => {
-        setSmartNudgePermission(permission);
-        addSmartNudgeEvent(
+        setBrowserNotificationPermission(permission);
+        addBrowserNotificationEvent(
           "notification_permission",
           `Notification permission: ${permission}`,
-          "Permission requested for Smart Nudges."
+          "Permission requested for browser notifications."
         );
       });
     }
-  }, [addSmartNudgeEvent, smartNudges.enabled]);
+  }, [addBrowserNotificationEvent, browserNotifications.enabled]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -484,17 +484,17 @@ function WorkspacePage() {
 
     const reminderTimer = window.setInterval(() => {
       const now = Date.now();
-      const activeReminder = smartReminderRef.current.active;
+      const activeReminder = reminderSequenceRef.current.active;
 
-      if (!smartNudges.enabled || !connected) {
+      if (!browserNotifications.enabled || !connected) {
         if (activeReminder) {
-          smartReminderRef.current.active = null;
-          setSmartNudgeStatus("Smart Nudges stopped.");
+          reminderSequenceRef.current.active = null;
+          setBrowserNotificationStatus("Browser notifications are off.");
         }
         return;
       }
 
-      const modeConfig = SMART_MODE_CONFIG[smartNudges.mode] || SMART_MODE_CONFIG.Normal;
+      const modeConfig = NOTIFICATION_MODE_CONFIG[browserNotifications.mode] || NOTIFICATION_MODE_CONFIG.Normal;
       const inactiveMs = now - lastInteractionRef.current;
       const lowProductivityMs = now - lastInputRef.current;
       const hasSessionProgress = telemetry.timeOnTaskMs > 12000;
@@ -509,22 +509,22 @@ function WorkspacePage() {
       const productivityRecovered =
         telemetry.typingSpeed > 0.28 && signal.procrastinationScore < 0.4 && signal.distractionScore < 0.4;
 
-      if (!smartReminderRef.current.active) {
+      if (!reminderSequenceRef.current.active) {
         if (forgotSessionDetected || lostFocusDetected) {
           const type = forgotSessionDetected ? "forgot_session" : "lost_focus";
-          smartReminderRef.current.active = {
+          reminderSequenceRef.current.active = {
             type,
             startedAt: now,
             sentCount: 0
           };
 
-          setSmartNudgeStatus(
+          setBrowserNotificationStatus(
             type === "forgot_session"
-              ? "Detected possible forgotten session. Smart nudges engaged."
-              : "Detected low productivity. Smart nudges engaged."
+              ? "Detected possible forgotten session. Browser reminder sequence started."
+              : "Detected low productivity. Browser reminder sequence started."
           );
 
-          addSmartNudgeEvent(
+          addBrowserNotificationEvent(
             "focus_drift_detected",
             type === "forgot_session" ? "Forgot session detected" : "Lost focus detected",
             "Preparing reminder sequence."
@@ -533,37 +533,37 @@ function WorkspacePage() {
         return;
       }
 
-      const active = smartReminderRef.current.active;
+      const active = reminderSequenceRef.current.active;
 
       if (userReturned || (active.type === "lost_focus" && productivityRecovered)) {
-        addSmartNudgeEvent("user_returned", "User returned", "Reminder sequence stopped.");
-        smartReminderRef.current.active = null;
-        setSmartNudgeStatus("User returned. Smart reminders paused.");
+        addBrowserNotificationEvent("user_returned", "User returned", "Reminder sequence stopped.");
+        reminderSequenceRef.current.active = null;
+        setBrowserNotificationStatus("User returned. Browser reminders paused.");
         return;
       }
 
-      if (active.sentCount >= SMART_REMINDER_DELAYS_MS.length) {
-        setSmartNudgeStatus("Reminder limit reached (3). Waiting for user return.");
+      if (active.sentCount >= REMINDER_DELAYS_MS.length) {
+        setBrowserNotificationStatus("Reminder limit reached (3). Waiting for user return.");
         return;
       }
 
-      const dueDelay = SMART_REMINDER_DELAYS_MS[active.sentCount];
+      const dueDelay = REMINDER_DELAYS_MS[active.sentCount];
       if (now - active.startedAt < dueDelay) {
         return;
       }
 
       if (active.sentCount > 0) {
-        addSmartNudgeEvent("user_ignored", "User ignored", "No return after previous reminder.");
+        addBrowserNotificationEvent("user_ignored", "User ignored", "No return after previous reminder.");
       }
 
       const message =
         active.type === "forgot_session"
           ? "Reminder sent: Resume session"
           : "Reminder sent: Regain focus and continue the current task";
-      addSmartNudgeEvent("reminder_sent", message, `Mode: ${smartNudges.mode}`);
+      addBrowserNotificationEvent("reminder_sent", message, `Mode: ${browserNotifications.mode}`);
 
-      if (smartNudgePermission === "granted" && typeof Notification !== "undefined") {
-        const notification = new Notification("Nudge Smart Reminder", {
+      if (browserNotificationPermission === "granted" && typeof Notification !== "undefined") {
+        const notification = new Notification("Nudge Reminder", {
           body:
             active.type === "forgot_session"
               ? "You paused your session. Resume now?"
@@ -573,56 +573,45 @@ function WorkspacePage() {
 
         notification.onclick = () => {
           window.focus();
-          addSmartNudgeEvent("user_returned", "User returned", "Clicked browser notification.");
-          smartReminderRef.current.active = null;
-          setSmartNudgeStatus("Notification opened. User returned.");
+          addBrowserNotificationEvent("user_returned", "User returned", "Clicked browser notification.");
+          reminderSequenceRef.current.active = null;
+          setBrowserNotificationStatus("Notification opened. User returned.");
           notification.close();
         };
       } else {
-        addSmartNudgeEvent(
+        addBrowserNotificationEvent(
           "notification_skipped",
           "Browser notification skipped",
           "Permission not granted. Enable notifications for real alerts."
         );
       }
 
-      if (smartNudges.smsEnabled && isPhoneNumberValid(smartNudges.phoneNumber)) {
-        const formatted = formatPhoneForDisplay(smartNudges.phoneNumber);
-        addSmartNudgeEvent(
-          "sms_sent",
-          `📱 Text sent to ${formatted}: "You paused your session. Resume now?"`,
-          "SMS simulation"
-        );
-      }
-
-      smartReminderRef.current.active = {
+      reminderSequenceRef.current.active = {
         ...active,
         sentCount: active.sentCount + 1
       };
 
-      const remaining = SMART_REMINDER_DELAYS_MS.length - (active.sentCount + 1);
-      setSmartNudgeStatus(
+      const remaining = REMINDER_DELAYS_MS.length - (active.sentCount + 1);
+      setBrowserNotificationStatus(
         remaining > 0 ? `Reminder sent. ${remaining} reminder(s) remaining in sequence.` : "All reminders sent."
       );
     }, 1000);
 
     return () => window.clearInterval(reminderTimer);
   }, [
-    addSmartNudgeEvent,
+    addBrowserNotificationEvent,
     connected,
     sessionId,
     signal.procrastinationScore,
     signal.distractionScore,
-    smartNudgePermission,
-    smartNudges.enabled,
-    smartNudges.mode,
-    smartNudges.phoneNumber,
-    smartNudges.smsEnabled,
+    browserNotificationPermission,
+    browserNotifications.enabled,
+    browserNotifications.mode,
     telemetry.timeOnTaskMs,
     telemetry.typingSpeed
   ]);
 
-function handleInterventionAction(intervention, action) {
+  function handleInterventionAction(intervention, action) {
     if (!intervention || !sessionId) {
       return "";
     }
@@ -758,18 +747,26 @@ function handleInterventionAction(intervention, action) {
     }
   }
 
-  function handleSmartNudgesToggle(enabled) {
-    setSmartNudges((prev) => ({ ...prev, enabled }));
+  function handleBrowserNotificationsToggle(enabled) {
+    setBrowserNotifications((prev) => ({ ...prev, enabled }));
 
     if (!enabled) {
-      smartReminderRef.current.active = null;
-      setSmartNudgeStatus("Smart Nudges are off.");
-      addSmartNudgeEvent("nudge_disabled", "Smart Nudges disabled", "Reminder engine stopped.");
+      reminderSequenceRef.current.active = null;
+      setBrowserNotificationStatus("Browser notifications are off.");
+      addBrowserNotificationEvent(
+        "browser_notifications_disabled",
+        "Browser notifications disabled",
+        "Reminder engine stopped."
+      );
       return;
     }
 
-    setSmartNudgeStatus(`Smart Nudges enabled in ${smartNudges.mode} mode.`);
-    addSmartNudgeEvent("nudge_enabled", "Smart Nudges enabled", `Mode: ${smartNudges.mode}`);
+    setBrowserNotificationStatus(`Browser notifications running in ${browserNotifications.mode} mode.`);
+    addBrowserNotificationEvent(
+      "browser_notifications_enabled",
+      "Browser notifications enabled",
+      `Mode: ${browserNotifications.mode}`
+    );
   }
 
   function updateCourseGrade(index, key, value) {
@@ -790,25 +787,14 @@ function handleInterventionAction(intervention, action) {
     }));
   }
 
-  function handleSmartNudgeMode(mode) {
-    setSmartNudges((prev) => ({ ...prev, mode }));
-    addSmartNudgeEvent("nudge_mode_changed", `Notification mode set to ${mode}`, "Updated Smart Nudges behavior.");
-    setSmartNudgeStatus(`Smart Nudges running in ${mode} mode.`);
-  }
-
-  function handleEnableSmsReminders() {
-    if (!isPhoneNumberValid(smartNudges.phoneNumber)) {
-      setSmartNudgeStatus("Enter a valid phone number to enable SMS reminders.");
-      return;
-    }
-
-    setSmartNudges((prev) => ({ ...prev, smsEnabled: true }));
-    addSmartNudgeEvent(
-      "sms_enabled",
-      `SMS reminders enabled for ${formatPhoneForDisplay(smartNudges.phoneNumber)}`,
-      "SMS simulation active."
+  function handleBrowserNotificationMode(mode) {
+    setBrowserNotifications((prev) => ({ ...prev, mode }));
+    addBrowserNotificationEvent(
+      "notification_mode_changed",
+      `Notification mode set to ${mode}`,
+      "Updated browser reminder behavior."
     );
-    setSmartNudgeStatus("SMS reminders enabled.");
+    setBrowserNotificationStatus(`Browser notifications running in ${mode} mode.`);
   }
 
   async function goToDashboard() {
@@ -816,9 +802,9 @@ function handleInterventionAction(intervention, action) {
       return;
     }
 
-    smartReminderRef.current.active = null;
-    if (smartNudges.enabled) {
-      addSmartNudgeEvent("session_completed", "Session completed", "Stopped all smart reminder sequences.");
+    reminderSequenceRef.current.active = null;
+    if (browserNotifications.enabled) {
+      addBrowserNotificationEvent("session_completed", "Session completed", "Stopped all browser reminder sequences.");
     }
 
     await endSession(sessionId);
@@ -986,13 +972,6 @@ function handleInterventionAction(intervention, action) {
             >
               Grades & Risk
             </button>
-            <button
-              className={`module-tab ${activeTab === "smart_nudges" ? "active" : ""}`}
-              onClick={() => setActiveTab("smart_nudges")}
-              type="button"
-            >
-              Smart Nudges
-            </button>
           </section>
 
           {activeTab === "live" ? (
@@ -1121,6 +1100,45 @@ function handleInterventionAction(intervention, action) {
                   {combinedTimeline.map((item) => (
                     <div key={item.id} className="timeline-item">
                       <span>{formatEventType(item.eventType)}</span>
+                      <p>{item.label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="timeline-box">
+                  <h4>Browser Notifications</h4>
+                  <label className="notification-toggle">
+                    <span>Enable browser reminders</span>
+                    <input
+                      type="checkbox"
+                      checked={browserNotifications.enabled}
+                      onChange={(event) => handleBrowserNotificationsToggle(event.target.checked)}
+                    />
+                  </label>
+                  <label className="risk-field">
+                    Notification mode
+                    <select
+                      value={browserNotifications.mode}
+                      onChange={(event) => handleBrowserNotificationMode(event.target.value)}
+                      disabled={!browserNotifications.enabled}
+                    >
+                      <option value="Normal">Normal</option>
+                      <option value="Focus">Focus</option>
+                      <option value="Chill">Chill</option>
+                    </select>
+                  </label>
+                  <p className="monitor-note">
+                    Browser permission: <strong>{browserNotificationPermission}</strong>
+                  </p>
+                  <p className="monitor-note">{browserNotificationStatus}</p>
+                </div>
+
+                <div className="timeline-box">
+                  <h4>Notification Log</h4>
+                  {notificationLogs.length === 0 ? <p>No reminders yet.</p> : null}
+                  {notificationLogs.slice(0, 6).map((item) => (
+                    <div key={item.id} className="timeline-item">
+                      <span>{new Date(item.ts).toLocaleTimeString()}</span>
                       <p>{item.label}</p>
                     </div>
                   ))}
@@ -1306,104 +1324,6 @@ function handleInterventionAction(intervention, action) {
               </aside>
             </section>
           ) : null}
-
-          {activeTab === "smart_nudges" ? (
-            <section className="workspace-grid">
-              <article className="panel panel-main">
-                <h3>Smart Nudges – Persistent Focus Recovery</h3>
-
-                <div className="smart-settings-card">
-                  <label className="smart-toggle">
-                    <span>Enable Smart Nudges</span>
-                    <input
-                      type="checkbox"
-                      checked={smartNudges.enabled}
-                      onChange={(event) => handleSmartNudgesToggle(event.target.checked)}
-                    />
-                  </label>
-
-                  <label className="risk-field">
-                    Notification mode
-                    <select
-                      value={smartNudges.mode}
-                      onChange={(event) => handleSmartNudgeMode(event.target.value)}
-                      disabled={!smartNudges.enabled}
-                    >
-                      <option value="Normal">Normal</option>
-                      <option value="Focus">Focus</option>
-                      <option value="Chill">Chill</option>
-                    </select>
-                  </label>
-
-                  <p className="monitor-note">
-                    Browser permission: <strong>{smartNudgePermission}</strong>
-                  </p>
-                  <p className="monitor-note">{smartNudgeStatus}</p>
-                </div>
-
-                <div className="smart-settings-card">
-                  <h4>SMS Reminder Simulation</h4>
-                  <label className="risk-field">
-                    Phone number
-                    <input
-                      type="text"
-                      value={smartNudges.phoneNumber}
-                      onChange={(event) =>
-                        setSmartNudges((prev) => ({ ...prev, phoneNumber: event.target.value }))
-                      }
-                      placeholder="(555) 123-4567"
-                    />
-                  </label>
-
-                  <div className="action-row">
-                    <button
-                      className="btn btn-ghost"
-                      onClick={handleEnableSmsReminders}
-                      type="button"
-                      disabled={!smartNudges.enabled}
-                    >
-                      Enable SMS Reminders
-                    </button>
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        setSmartNudges((prev) => ({ ...prev, smsEnabled: false }));
-                        addSmartNudgeEvent("sms_disabled", "SMS reminders disabled", "SMS simulation inactive.");
-                      }}
-                      type="button"
-                    >
-                      Disable SMS
-                    </button>
-                  </div>
-
-                  <p className="monitor-note">
-                    SMS status: <strong>{smartNudges.smsEnabled ? "Enabled" : "Disabled"}</strong>
-                  </p>
-                </div>
-              </article>
-
-              <aside className="panel panel-side">
-                <h3>Reminder Log</h3>
-                <div className="timeline-box">
-                  {reminderLogs.length === 0 ? <p>No reminders yet.</p> : null}
-                  {reminderLogs.map((item) => (
-                    <div key={item.id} className="timeline-item">
-                      <span>{new Date(item.ts).toLocaleTimeString()}</span>
-                      <p>{item.label}</p>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="timeline-box">
-                  <h4>Reminder Rules</h4>
-                  <p>1st notification after inactivity detection.</p>
-                  <p>2nd reminder after 3 minutes.</p>
-                  <p>3rd reminder after 8 minutes. Then stop.</p>
-                  <p>Reminders stop if user returns, session ends, or Smart Nudges is off.</p>
-                </div>
-              </aside>
-            </section>
-          ) : null}
         </>
       ) : null}
 
@@ -1527,7 +1447,7 @@ function computeGradesRiskState({
   };
 }
 
-function attachRiskToIntervention(intervention, riskState, smartNudges = null, upcomingAssessments = []) {
+function attachRiskToIntervention(intervention, riskState, browserNotifications = null, upcomingAssessments = []) {
   if (!intervention) {
     return null;
   }
@@ -1537,8 +1457,8 @@ function attachRiskToIntervention(intervention, riskState, smartNudges = null, u
   const riskLine = `You are currently at ${riskState.level.toLowerCase()} risk based on your grade and session behavior.`;
   const urgencyLine = buildAssessmentUrgencyLine(upcomingAssessments, intervention.type);
   const nudgeLine =
-    smartNudges?.enabled
-      ? `Smart Nudges is active (${smartNudges.mode}) and can re-engage you if you step away.`
+    browserNotifications?.enabled
+      ? `Browser reminders are active (${browserNotifications.mode}) and will notify you if momentum drops.`
       : "";
   const nextActionLine = urgencyLine || intervention.nextAction;
 
@@ -1798,20 +1718,6 @@ function parseGradeFromPortalLink(link, fallbackGrade = "B+") {
     source: "No grade token found in link.",
     message: "Could not parse a grade from this link. Add grade in URL (e.g. ?grade=B+) or keep manual grade."
   };
-}
-
-function isPhoneNumberValid(value) {
-  const digits = String(value || "").replace(/\D/g, "");
-  return digits.length >= 10;
-}
-
-function formatPhoneForDisplay(value) {
-  const digits = String(value || "").replace(/\D/g, "");
-  if (digits.length < 10) {
-    return value;
-  }
-  const core = digits.slice(-10);
-  return `(${core.slice(0, 3)}) ${core.slice(3, 6)}-${core.slice(6)}`;
 }
 
 function buildEmptyCourseGrades() {
