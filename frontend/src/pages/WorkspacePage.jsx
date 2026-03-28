@@ -298,7 +298,6 @@ function WorkspacePage() {
             onChange={handleAnswerChange}
             onKeyDown={handleKeyDown}
             spellCheck={false}
-            placeholder="// Write your solution here\n// The system monitors your process and gives live interventions"
           />
 
           <div className="action-row">
