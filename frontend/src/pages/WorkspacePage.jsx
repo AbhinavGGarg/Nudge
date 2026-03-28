@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { io } from "socket.io-client";
 import FloatingAssistant from "../components/FloatingAssistant";
 import InterventionPopup from "../components/InterventionPopup";
-import { endSession, fetchProblems, getSocketBase, startSession, submitAttempt } from "../lib/api";
+import {
+  endSession,
+  fetchProblems,
+  isRemoteMode,
+  markInterventionApplied,
+  recordMetrics,
+  startSession,
+  submitAttempt
+} from "../lib/api";
 
 const DEFAULT_MASTERY = {
   variables: 0.7,
@@ -19,7 +26,7 @@ function WorkspacePage() {
 
   const [learnerName, setLearnerName] = useState("Ava Chen");
   const [sessionId, setSessionId] = useState("");
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(!isRemoteMode());
   const [problems, setProblems] = useState([]);
   const [selectedProblemId, setSelectedProblemId] = useState("");
   const [answer, setAnswer] = useState("");
@@ -38,7 +45,6 @@ function WorkspacePage() {
   const [interventionHistory, setInterventionHistory] = useState([]);
   const [masteryMap, setMasteryMap] = useState(DEFAULT_MASTERY);
 
-  const socketRef = useRef(null);
   const sessionStartRef = useRef(Date.now());
   const problemStartRef = useRef(Date.now());
   const lastInputRef = useRef(Date.now());
@@ -70,6 +76,7 @@ function WorkspacePage() {
       setProblems(list);
       setSessionId(sessionResponse.sessionId);
       sessionStartRef.current = Date.now();
+      setConnected(true);
 
       if (list[0]) {
         setSelectedProblemId(list[0].id);
@@ -85,42 +92,7 @@ function WorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [learnerName]);
-
-  useEffect(() => {
-    if (!sessionId) {
-      return;
-    }
-
-    const socket = io(getSocketBase(), {
-      transports: ["websocket"]
-    });
-
-    socketRef.current = socket;
-
-    socket.on("connect", () => {
-      setConnected(true);
-      socket.emit("session:join", { sessionId });
-    });
-
-    socket.on("disconnect", () => {
-      setConnected(false);
-    });
-
-    socket.on("session:signal", (incomingSignal) => {
-      setSignal(incomingSignal);
-    });
-
-    socket.on("intervention", (incomingIntervention) => {
-      setActiveIntervention(incomingIntervention);
-      setInterventionHistory((prev) => [incomingIntervention, ...prev].slice(0, 6));
-    });
-
-    return () => {
-      socket.disconnect();
-      socketRef.current = null;
-    };
-  }, [sessionId]);
+  }, []);
 
   useEffect(() => {
     if (!sessionId || !selectedProblemId) {
@@ -157,7 +129,14 @@ function WorkspacePage() {
         keystrokesDelta: keystrokesSinceSendRef.current
       };
 
-      socketRef.current?.emit("session:metrics", { sessionId, metrics });
+      const realtime = recordMetrics(sessionId, metrics);
+      if (realtime?.signal) {
+        setSignal(realtime.signal);
+      }
+      if (realtime?.intervention) {
+        setActiveIntervention(realtime.intervention);
+        setInterventionHistory((prev) => [realtime.intervention, ...prev].slice(0, 6));
+      }
 
       setTelemetry({
         typingSpeed,
@@ -246,10 +225,7 @@ function WorkspacePage() {
       return;
     }
 
-    socketRef.current?.emit("session:intervention-result", {
-      sessionId,
-      interventionId: intervention.id
-    });
+    markInterventionApplied(sessionId, intervention.id);
 
     setAnswer((prev) => `${prev}\n\n// Intervention hint:\n// ${intervention.nextAction}\n// ${intervention.shortExample}`);
     setActiveIntervention(null);
@@ -281,7 +257,7 @@ function WorkspacePage() {
             <input value={learnerName} onChange={(event) => setLearnerName(event.target.value)} />
           </label>
           <span className={`status-pill ${connected ? "online" : "offline"}`}>
-            {connected ? "Live Monitoring" : "Connecting"}
+            {connected ? "Live Monitoring" : "Starting"}
           </span>
           <button className="btn btn-primary" onClick={goToDashboard}>
             End Session + Dashboard
