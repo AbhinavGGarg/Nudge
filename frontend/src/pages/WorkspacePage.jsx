@@ -1,15 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import FloatingAssistant from "../components/FloatingAssistant";
 import InterventionPopup from "../components/InterventionPopup";
 import {
   endSession,
-  fetchProblems,
-  isRemoteMode,
   markInterventionApplied,
   recordMetrics,
-  startSession,
-  submitAttempt
+  startSession
 } from "../lib/api";
 
 const DEFAULT_MASTERY = {
@@ -27,13 +23,9 @@ function WorkspacePage() {
   const [learnerName, setLearnerName] = useState("");
   const [learnerDraft, setLearnerDraft] = useState("");
   const [sessionId, setSessionId] = useState("");
-  const [connected, setConnected] = useState(!isRemoteMode());
+  const [connected, setConnected] = useState(false);
   const [startingSession, setStartingSession] = useState(false);
   const [startError, setStartError] = useState("");
-  const [problems, setProblems] = useState([]);
-  const [selectedProblemId, setSelectedProblemId] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [attemptResult, setAttemptResult] = useState(null);
   const [signal, setSignal] = useState({ issueType: null, issueSeverity: null, confusionScore: 0 });
   const [telemetry, setTelemetry] = useState({
     typingSpeed: 0,
@@ -47,49 +39,14 @@ function WorkspacePage() {
   const [activeIntervention, setActiveIntervention] = useState(null);
   const [interventionHistory, setInterventionHistory] = useState([]);
   const [masteryMap, setMasteryMap] = useState(DEFAULT_MASTERY);
+  const dismissedIssueUntilRef = useRef({});
 
   const sessionStartRef = useRef(Date.now());
-  const problemStartRef = useRef(Date.now());
   const lastInputRef = useRef(Date.now());
   const keyEventsRef = useRef([]);
   const editEventsRef = useRef([]);
   const keystrokesSinceSendRef = useRef(0);
   const totalKeystrokesRef = useRef(0);
-  const currentTextRef = useRef("");
-
-  const selectedProblem = useMemo(
-    () => problems.find((problem) => problem.id === selectedProblemId) || null,
-    [problems, selectedProblemId]
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadProblems() {
-      const problemResponse = await fetchProblems();
-
-      if (cancelled) {
-        return;
-      }
-
-      const list = problemResponse?.problems || [];
-      setProblems(list);
-
-      if (list[0]) {
-        setSelectedProblemId(list[0].id);
-        setAnswer("");
-        currentTextRef.current = "";
-      }
-    }
-
-    loadProblems().catch((error) => {
-      console.error(error);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   async function handleCreateSession() {
     const cleanName = learnerDraft.trim();
@@ -106,6 +63,12 @@ function WorkspacePage() {
       setSessionId(sessionResponse.sessionId);
       setLearnerName(cleanName);
       sessionStartRef.current = Date.now();
+      lastInputRef.current = Date.now();
+      keyEventsRef.current = [];
+      editEventsRef.current = [];
+      keystrokesSinceSendRef.current = 0;
+      totalKeystrokesRef.current = 0;
+      dismissedIssueUntilRef.current = {};
       setConnected(true);
     } catch (error) {
       setStartError("Could not start session. Try again.");
@@ -115,7 +78,7 @@ function WorkspacePage() {
   }
 
   useEffect(() => {
-    if (!sessionId || !selectedProblemId) {
+    if (!sessionId) {
       return;
     }
 
@@ -133,12 +96,12 @@ function WorkspacePage() {
       const deleteCount = repeatedEdits;
       const typingSpeed = Number((keyEventsRef.current.length / 10).toFixed(2));
       const deletionRate = Number((deleteCount / Math.max(1, insertCount + deleteCount)).toFixed(2));
-      const complexityScore = estimateComplexity(answer);
-      const nestedLoopSignals = /(for|while)[\s\S]{0,120}(for|while)/i.test(answer) ? 1 : 0;
-      const timeOnProblemMs = now - problemStartRef.current;
+      const complexityScore = 0;
+      const nestedLoopSignals = 0;
+      const timeOnProblemMs = now - sessionStartRef.current;
 
       const metrics = {
-        problemId: selectedProblemId,
+        problemId: "live-monitor",
         typingSpeed,
         pauseDurationMs,
         repeatedEdits,
@@ -154,8 +117,16 @@ function WorkspacePage() {
         setSignal(realtime.signal);
       }
       if (realtime?.intervention) {
-        setActiveIntervention(realtime.intervention);
-        setInterventionHistory((prev) => [realtime.intervention, ...prev].slice(0, 6));
+        const snoozeUntil = dismissedIssueUntilRef.current[realtime.intervention.type] || 0;
+        if (Date.now() >= snoozeUntil) {
+          setActiveIntervention(realtime.intervention);
+          setInterventionHistory((prev) => {
+            if (prev.some((item) => item.id === realtime.intervention.id)) {
+              return prev;
+            }
+            return [realtime.intervention, ...prev].slice(0, 6);
+          });
+        }
       }
 
       setTelemetry({
@@ -172,73 +143,35 @@ function WorkspacePage() {
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [answer, selectedProblemId, sessionId]);
+  }, [sessionId]);
 
   useEffect(() => {
-    if (!selectedProblem) {
+    if (!sessionId) {
       return;
     }
 
-    setAnswer("");
-    setAttemptResult(null);
-    currentTextRef.current = "";
-    problemStartRef.current = Date.now();
-    lastInputRef.current = Date.now();
-    keyEventsRef.current = [];
-    editEventsRef.current = [];
-    keystrokesSinceSendRef.current = 0;
-  }, [selectedProblem]);
+    function onKeyDown(event) {
+      const trackable = event.key.length === 1 || ["Backspace", "Delete", "Enter", "Tab"].includes(event.key);
+      if (!trackable) {
+        return;
+      }
 
-  function handleKeyDown(event) {
-    const trackable = event.key.length === 1 || ["Backspace", "Delete", "Enter", "Tab"].includes(event.key);
-    if (!trackable) {
-      return;
+      const now = Date.now();
+      keyEventsRef.current.push(now);
+      lastInputRef.current = now;
+      keystrokesSinceSendRef.current += 1;
+      totalKeystrokesRef.current += 1;
+
+      if (event.key === "Backspace" || event.key === "Delete") {
+        editEventsRef.current.push({ ts: now, type: "delete" });
+      } else {
+        editEventsRef.current.push({ ts: now, type: "insert" });
+      }
     }
 
-    const now = Date.now();
-    keyEventsRef.current.push(now);
-    lastInputRef.current = now;
-    keystrokesSinceSendRef.current += 1;
-    totalKeystrokesRef.current += 1;
-
-    if (event.key === "Backspace" || event.key === "Delete") {
-      editEventsRef.current.push({ ts: now, type: "delete" });
-    }
-  }
-
-  function handleAnswerChange(event) {
-    const nextValue = event.target.value;
-    const now = Date.now();
-    const prevLength = currentTextRef.current.length;
-
-    if (nextValue.length > prevLength) {
-      editEventsRef.current.push({ ts: now, type: "insert" });
-    } else if (nextValue.length < prevLength) {
-      editEventsRef.current.push({ ts: now, type: "delete" });
-    }
-
-    currentTextRef.current = nextValue;
-    lastInputRef.current = now;
-    setAnswer(nextValue);
-  }
-
-  async function handleSubmitAttempt() {
-    if (!sessionId || !selectedProblemId) {
-      return;
-    }
-
-    const result = await submitAttempt({
-      sessionId,
-      problemId: selectedProblemId,
-      answer
-    });
-
-    setAttemptResult(result);
-
-    if (result.mastery) {
-      setMasteryMap(result.mastery);
-    }
-  }
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [sessionId]);
 
   function applyIntervention(intervention) {
     if (!intervention) {
@@ -246,12 +179,19 @@ function WorkspacePage() {
     }
 
     markInterventionApplied(sessionId, intervention.id);
-
-    setAnswer((prev) => `${prev}\n\n// Intervention hint:\n// ${intervention.nextAction}\n// ${intervention.shortExample}`);
+    setMasteryMap((prev) => ({
+      ...prev,
+      [intervention.concept]: Math.min(0.99, (prev[intervention.concept] || 0.5) + 0.04)
+    }));
+    dismissedIssueUntilRef.current[intervention.type] = Date.now() + 4 * 60 * 1000;
     setActiveIntervention(null);
   }
 
-  function dismissIntervention() {
+  function dismissIntervention(interventionId) {
+    const target = interventionHistory.find((item) => item.id === interventionId) || activeIntervention;
+    if (target?.type) {
+      dismissedIssueUntilRef.current[target.type] = Date.now() + 4 * 60 * 1000;
+    }
     setActiveIntervention(null);
   }
 
@@ -272,24 +212,22 @@ function WorkspacePage() {
           <p>Real-time intervention system for coding cognition</p>
         </div>
         <div className="status-cluster">
-          <label className="name-input-wrap">
-            Learner
-            <input value={learnerName} onChange={(event) => setLearnerName(event.target.value)} />
-          </label>
           <span className={`status-pill ${connected ? "online" : "offline"}`}>
             {connected ? "Live Monitoring" : "Session not started"}
           </span>
           {learnerName ? <span className="status-pill online">Learner: {learnerName}</span> : null}
-          <button className="btn btn-primary" onClick={goToDashboard}>
-            End Session + Dashboard
-          </button>
+          {sessionId ? (
+            <button className="btn btn-primary" onClick={goToDashboard}>
+              End Session + Dashboard
+            </button>
+          ) : null}
         </div>
       </header>
 
       {!sessionId ? (
         <section className="panel">
           <h3>Create Learner Session</h3>
-          <p>Enter learner name to start monitoring and interventions.</p>
+          <p>Enter learner name to start monitoring. No default learner is pre-filled.</p>
           <div className="action-row">
             <input
               value={learnerDraft}
@@ -306,43 +244,12 @@ function WorkspacePage() {
       ) : null}
 
       {sessionId ? (
-        <section className="workspace-grid">
-          <article className="panel panel-main">
-            <div className="problem-tabs">
-              {problems.map((problem) => (
-                <button
-                  key={problem.id}
-                  className={`problem-chip ${problem.id === selectedProblemId ? "active" : ""}`}
-                  onClick={() => setSelectedProblemId(problem.id)}
-                >
-                  <span>{problem.title}</span>
-                  <small>{problem.difficulty}</small>
-                </button>
-              ))}
-            </div>
-
-            <textarea
-              className="code-editor"
-              value={answer}
-              onChange={handleAnswerChange}
-              onKeyDown={handleKeyDown}
-              spellCheck={false}
-            />
-
-            <div className="action-row">
-              <button className="btn btn-primary" onClick={handleSubmitAttempt}>
-                Check Attempt
-              </button>
-              {attemptResult ? (
-                <span className={`attempt-badge ${attemptResult.isCorrect ? "good" : "warn"}`}>
-                  {attemptResult.isCorrect ? "Correct path" : "Needs revision"}: {attemptResult.feedback}
-                </span>
-              ) : null}
-            </div>
-          </article>
-
+        <section className="workspace-grid workspace-grid-single">
           <aside className="panel panel-side">
             <h3>Live Detection Feed</h3>
+            <p className="monitor-note">
+              The web app tracks engagement signals only. Use the Chrome extension for page-level live monitoring.
+            </p>
             <div className="metric-grid">
               <Metric label="Typing speed" value={`${telemetry.typingSpeed} keys/s`} />
               <Metric label="Pause" value={`${Math.round(telemetry.pauseDurationMs / 1000)}s`} />
@@ -389,7 +296,6 @@ function WorkspacePage() {
         </section>
       ) : null}
 
-      {sessionId ? <FloatingAssistant intervention={activeIntervention || interventionHistory[0]} /> : null}
       {sessionId ? (
         <InterventionPopup
           intervention={activeIntervention}
@@ -408,17 +314,6 @@ function Metric({ label, value }) {
       <strong>{value}</strong>
     </div>
   );
-}
-
-function estimateComplexity(code) {
-  const lines = code.split("\n").filter((line) => line.trim()).length;
-  const loops = (code.match(/\bfor\b|\bwhile\b/g) || []).length;
-  const conditionals = (code.match(/\bif\b|\bswitch\b/g) || []).length;
-  const functions = (code.match(/function\s+|=>/g) || []).length;
-  const recursionHints = (code.match(/factorial\s*\(|sumEven\s*\(/g) || []).length > 1 ? 1 : 0;
-
-  const raw = lines * 0.03 + loops * 0.16 + conditionals * 0.1 + functions * 0.08 + recursionHints * 0.12;
-  return Number(Math.min(1, raw).toFixed(2));
 }
 
 export default WorkspacePage;

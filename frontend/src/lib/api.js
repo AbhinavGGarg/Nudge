@@ -203,7 +203,7 @@ function markInterventionApplied(sessionId, interventionId) {
   writeSession(session);
 }
 
-function startLocalSession(learnerName = "Demo Student") {
+function startLocalSession(learnerName = "Learner") {
   const sessionId = createSessionId();
   const startedAt = Date.now();
   const session = createSessionObject(sessionId, learnerName, startedAt);
@@ -211,7 +211,7 @@ function startLocalSession(learnerName = "Demo Student") {
   return { sessionId, startedAt };
 }
 
-function ensureLocalSession(sessionId, learnerName = "Demo Student", startedAt = Date.now()) {
+function ensureLocalSession(sessionId, learnerName = "Learner", startedAt = Date.now()) {
   const existing = readSession(sessionId);
   if (existing) {
     return existing;
@@ -368,15 +368,22 @@ function detectIssue(session, metrics) {
   const concept = problem?.concepts?.[0] || "functions";
   const recentAttempts = session.attempts.filter((attempt) => attempt.problemId === problemId).slice(-3);
   const incorrectAttempts = recentAttempts.filter((attempt) => !attempt.isCorrect).length;
+  const totalKeystrokes = session.aggregate.totalKeystrokes || 0;
+
+  const hasMeaningfulInput =
+    totalKeystrokes >= 6 || (metrics.keystrokesDelta || 0) >= 2 || repeatedEdits >= 2 || complexityScore > 0.22;
+  if (!hasMeaningfulInput) {
+    return null;
+  }
 
   const confusionSignals = [];
-  if (pauseDurationMs > 11000) {
+  if (pauseDurationMs > 11000 && totalKeystrokes >= 4) {
     confusionSignals.push("long_pause");
   }
   if (repeatedEdits >= 6 || deletionRate > 0.32) {
     confusionSignals.push("churn_editing");
   }
-  if (typingSpeed < 1.1 && (metrics.timeOnProblemMs || 0) > 60000) {
+  if (typingSpeed < 1.1 && (metrics.timeOnProblemMs || 0) > 60000 && totalKeystrokes >= 6) {
     confusionSignals.push("slow_progress");
   }
   if (incorrectAttempts >= 2) {
@@ -471,10 +478,17 @@ function buildIntervention(issue) {
 
 function canEmitIntervention(session, issueType) {
   const now = Date.now();
+  const unresolvedSameType = session.interventions.some(
+    (entry) => entry.type === issueType && !entry.applied && now - entry.ts < 10 * 60 * 1000
+  );
+  if (unresolvedSameType) {
+    return false;
+  }
+
   const cooldownByType = {
-    confusion: 18000,
-    knowledge_gap: 14000,
-    inefficiency: 22000
+    confusion: 120000,
+    knowledge_gap: 150000,
+    inefficiency: 180000
   };
   const lastTs = session.lastInterventionByType[issueType] || 0;
   if (now - lastTs < (cooldownByType[issueType] || 15000)) {

@@ -1,8 +1,8 @@
 const tabSessions = new Map();
 const SESSION_COOLDOWN_MS = {
-  confusion: 18000,
-  knowledge_gap: 14000,
-  inefficiency: 22000
+  confusion: 120000,
+  knowledge_gap: 150000,
+  inefficiency: 180000
 };
 
 const conceptGraph = {
@@ -180,15 +180,22 @@ function detectIssue(session, metrics) {
   const deletionRate = metrics.deletionRate || 0;
   const complexityScore = metrics.complexityScore || 0;
   const nestedLoopSignals = metrics.nestedLoopSignals || 0;
+  const totalKeystrokes = session.aggregate.totalKeystrokes || 0;
+
+  const hasMeaningfulInput =
+    totalKeystrokes >= 6 || (metrics.keystrokesDelta || 0) >= 2 || repeatedEdits >= 2 || complexityScore > 0.22;
+  if (!hasMeaningfulInput) {
+    return null;
+  }
 
   const confusionSignals = [];
-  if (pauseDurationMs > 11000) {
+  if (pauseDurationMs > 11000 && totalKeystrokes >= 4) {
     confusionSignals.push("long_pause");
   }
   if (repeatedEdits >= 6 || deletionRate > 0.32) {
     confusionSignals.push("churn_editing");
   }
-  if (typingSpeed < 1.1 && (metrics.timeOnProblemMs || 0) > 60000) {
+  if (typingSpeed < 1.1 && (metrics.timeOnProblemMs || 0) > 60000 && totalKeystrokes >= 6) {
     confusionSignals.push("slow_progress");
   }
 
@@ -265,6 +272,13 @@ function bumpIssueCounters(session, issue) {
 
 function canEmitIntervention(session, issueType) {
   const now = Date.now();
+  const unresolvedSameType = session.interventions.some(
+    (entry) => entry.type === issueType && !entry.applied && now - entry.ts < 10 * 60 * 1000
+  );
+  if (unresolvedSameType) {
+    return false;
+  }
+
   const lastTs = session.lastInterventionByType[issueType] || 0;
   if (now - lastTs < (SESSION_COOLDOWN_MS[issueType] || 16000)) {
     return false;
