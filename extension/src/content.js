@@ -24,7 +24,9 @@ let recentTimeline = [];
 
 let currentSignal = {
   issueType: null,
+  issueDisplayType: null,
   issueSeverity: null,
+  statusLabel: "Live monitoring",
   procrastinationScore: 0,
   distractionScore: 0,
   lowFocusScore: 0,
@@ -45,6 +47,7 @@ const focusTimer = {
   startedAt: 0,
   durationMs: 60000,
   remainingMs: 60000,
+  label: "Refocus Timer Running",
   intervalId: null
 };
 
@@ -239,7 +242,11 @@ function handleInterventionAction(action) {
   actionDetail = actionPayloads[action] || lastIntervention.nextAction || "";
 
   if (action === "refocus_timer") {
-    startFocusTimer();
+    startFocusTimer(60000, "Refocus Timer Running");
+  }
+
+  if (action === "lock_in_2m") {
+    startFocusTimer(120000, "Lock In Timer Running");
   }
 
   chrome.runtime.sendMessage(
@@ -287,14 +294,16 @@ function handleInterventionAction(action) {
   );
 }
 
-function startFocusTimer() {
+function startFocusTimer(durationMs, label) {
   if (focusTimer.running) {
     return;
   }
 
   focusTimer.running = true;
   focusTimer.startedAt = Date.now();
-  focusTimer.remainingMs = focusTimer.durationMs;
+  focusTimer.durationMs = durationMs;
+  focusTimer.remainingMs = durationMs;
+  focusTimer.label = label || "Refocus Timer Running";
 
   if (focusTimer.intervalId) {
     clearInterval(focusTimer.intervalId);
@@ -311,7 +320,9 @@ function startFocusTimer() {
       impactMessage = "Focus restored. Focus improved by 40%";
       currentSignal.focusScore = Math.min(100, (currentSignal.focusScore || 60) + 40);
       currentSignal.issueType = null;
+      currentSignal.issueDisplayType = null;
       currentSignal.issueSeverity = null;
+      currentSignal.statusLabel = "Live monitoring";
 
       recentTimeline.unshift({
         id: `local-${Date.now()}`,
@@ -450,7 +461,9 @@ function renderOverlay() {
   }
 
   const issueType = currentSignal.issueType;
-  const issueLabel = issueType ? `${issueType.replaceAll("_", " ")} (${currentSignal.issueSeverity || "low"})` : "No active issue";
+  const issueDisplayType = currentSignal.issueDisplayType || (issueType ? issueType.replaceAll("_", " ") : "No active issue");
+  const issueLabel = issueType ? `${issueDisplayType} (${currentSignal.issueSeverity || "low"})` : "No active issue";
+  const statusLabel = currentSignal.statusLabel || "Live monitoring";
   const contextLine = `${currentContext.activityType || "none_detected"} • ${currentContext.category || "unknown"}`;
 
   const highestRisk = Math.max(
@@ -481,7 +494,7 @@ function renderOverlay() {
   const timerHtml = focusTimer.running
     ? `
       <div style="margin-top:10px;padding:9px;border-radius:10px;border:1px solid rgba(14,165,233,0.5);background:rgba(14,165,233,0.12)">
-        <div style="font-weight:700;color:#67e8f9">Refocus Timer Running</div>
+        <div style="font-weight:700;color:#67e8f9">${escapeHtml(focusTimer.label)}</div>
         <div style="margin-top:4px">${Math.ceil(focusTimer.remainingMs / 1000)}s remaining</div>
         <div style="margin-top:6px;height:7px;border-radius:999px;background:rgba(148,163,184,0.2);overflow:hidden">
           <span style="display:block;height:100%;width:${timerProgress}%;background:linear-gradient(90deg,#22d3ee,#4ade80);transition:width 240ms ease"></span>
@@ -489,6 +502,15 @@ function renderOverlay() {
       </div>
     `
     : "";
+
+  const actionButtons = buildActionButtons(lastIntervention, focusTimer.running);
+  const actionButtonsHtml = actionButtons
+    .map((item) => {
+      return `<button data-nudge-action="${escapeHtml(item.id)}" style="${item.style}" ${
+        item.disabled ? "disabled" : ""
+      }>${escapeHtml(item.label)}</button>`;
+    })
+    .join("");
 
   const interventionHtml = lastIntervention
     ? `
@@ -499,11 +521,7 @@ function renderOverlay() {
         <div style="margin-top:4px"><strong>Next:</strong> ${escapeHtml(lastIntervention.nextAction)}</div>
         <div style="margin-top:8px;padding:7px;border-radius:8px;background:rgba(15,23,42,0.4);display:${actionDetail ? "block" : "none"}">${escapeHtml(actionDetail || "")}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
-          <button id="nudge-refocus" style="background:#22c55e;color:#052e16;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px;font-weight:800" ${focusTimer.running ? "disabled" : ""}>Refocus (Start 60s timer)</button>
-          <button id="nudge-break-steps" style="background:#0ea5e9;color:#f8fafc;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px" ${focusTimer.running ? "disabled" : ""}>Break into Steps</button>
-          <button id="nudge-try-new" style="background:rgba(250,204,21,0.18);color:#fde68a;border:1px solid rgba(250,204,21,0.45);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px" ${focusTimer.running ? "disabled" : ""}>Try New Approach</button>
-          <button id="nudge-short-break" style="background:rgba(248,113,113,0.15);color:#fecaca;border:1px solid rgba(248,113,113,0.4);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px" ${focusTimer.running ? "disabled" : ""}>Take Short Break</button>
-          <button id="nudge-resume" style="background:rgba(74,222,128,0.18);color:#86efac;border:1px solid rgba(74,222,128,0.45);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px">Resume Task</button>
+          ${actionButtonsHtml}
         </div>
       </div>
     `
@@ -526,7 +544,7 @@ function renderOverlay() {
   overlayBody.innerHTML = `
     <style>@keyframes nudgePulse { 0% { box-shadow: 0 0 0 rgba(248,113,113,0); } 50% { box-shadow: 0 0 0 4px rgba(248,113,113,0.08); } 100% { box-shadow: 0 0 0 rgba(248,113,113,0); }}</style>
     <div style="display:grid;gap:4px">
-      <div><strong>Status:</strong> Live monitoring</div>
+      <div><strong>Status:</strong> ${escapeHtml(statusLabel)}</div>
       <div><strong>Context:</strong> ${escapeHtml(contextLine)}</div>
       <div><strong>Site:</strong> ${escapeHtml(currentContext.domain || window.location.hostname || "unknown")}</div>
       <div><strong>Issue:</strong> <span style="color:${issueColor}">${escapeHtml(issueLabel)}</span></div>
@@ -553,27 +571,14 @@ function renderOverlay() {
     </div>
   `;
 
-  const refocusBtn = overlayBody.querySelector("#nudge-refocus");
-  const breakStepsBtn = overlayBody.querySelector("#nudge-break-steps");
-  const tryNewBtn = overlayBody.querySelector("#nudge-try-new");
-  const shortBreakBtn = overlayBody.querySelector("#nudge-short-break");
-  const resumeBtn = overlayBody.querySelector("#nudge-resume");
-
-  if (refocusBtn && lastIntervention) {
-    refocusBtn.addEventListener("click", () => handleInterventionAction("refocus_timer"));
-  }
-  if (breakStepsBtn && lastIntervention) {
-    breakStepsBtn.addEventListener("click", () => handleInterventionAction("break_steps"));
-  }
-  if (tryNewBtn && lastIntervention) {
-    tryNewBtn.addEventListener("click", () => handleInterventionAction("try_new_approach"));
-  }
-  if (shortBreakBtn && lastIntervention) {
-    shortBreakBtn.addEventListener("click", () => handleInterventionAction("short_break"));
-  }
-  if (resumeBtn && lastIntervention) {
-    resumeBtn.addEventListener("click", () => handleInterventionAction("resume_task"));
-  }
+  overlayBody.querySelectorAll("[data-nudge-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.getAttribute("data-nudge-action");
+      if (action) {
+        handleInterventionAction(action);
+      }
+    });
+  });
 }
 
 function issueTone(issueType) {
@@ -715,4 +720,59 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function buildActionButtons(intervention, timerRunning) {
+  if (!intervention) {
+    return [];
+  }
+
+  const actions = Array.isArray(intervention.actions) && intervention.actions.length
+    ? intervention.actions
+    : ["refocus_timer", "break_steps", "try_new_approach", "short_break", "resume_task"];
+
+  return actions.map((action) => {
+    const style = buttonStyle(action);
+    const isTimerAction = action === "refocus_timer" || action === "lock_in_2m";
+    return {
+      id: action,
+      label: buttonLabel(action),
+      style,
+      disabled: Boolean(timerRunning && isTimerAction)
+    };
+  });
+}
+
+function buttonLabel(action) {
+  const labels = {
+    lock_in_2m: "Lock In (2 min focus)",
+    refocus_timer: "Refocus (Start 60s timer)",
+    break_steps: "Break into Steps",
+    try_new_approach: "Try New Approach",
+    short_break: "Take Short Break",
+    resume_task: "Resume Task",
+    ignore: "Ignore"
+  };
+  return labels[action] || "Resume Task";
+}
+
+function buttonStyle(action) {
+  const styles = {
+    lock_in_2m:
+      "background:#22c55e;color:#052e16;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px;font-weight:800",
+    refocus_timer:
+      "background:#22c55e;color:#052e16;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px;font-weight:800",
+    break_steps:
+      "background:#0ea5e9;color:#f8fafc;border:none;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px",
+    try_new_approach:
+      "background:rgba(250,204,21,0.18);color:#fde68a;border:1px solid rgba(250,204,21,0.45);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px",
+    short_break:
+      "background:rgba(248,113,113,0.15);color:#fecaca;border:1px solid rgba(248,113,113,0.4);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px",
+    resume_task:
+      "background:rgba(74,222,128,0.18);color:#86efac;border:1px solid rgba(74,222,128,0.45);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px",
+    ignore:
+      "background:rgba(148,163,184,0.2);color:#cbd5e1;border:1px solid rgba(148,163,184,0.4);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:12px"
+  };
+
+  return styles[action] || styles.resume_task;
 }

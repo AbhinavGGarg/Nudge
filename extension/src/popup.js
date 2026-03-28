@@ -94,7 +94,8 @@ function render(state) {
   el.activity.textContent = `activity: ${context.activityType || "none_detected"}`;
   el.category.textContent = `category: ${context.category || "unknown"}`;
   el.domain.textContent = `domain: ${context.domain || "unknown"}`;
-  el.issue.textContent = signal.issueType ? `${signal.issueType} (${signal.issueSeverity || "low"})` : "None";
+  const issueDisplay = signal.issueDisplayType || signal.issueType;
+  el.issue.textContent = issueDisplay ? `${issueDisplay} (${signal.issueSeverity || "low"})` : "None";
   el.friction.textContent = `${risk}%`;
   el.frictionBar.style.width = `${Math.min(100, risk)}%`;
 
