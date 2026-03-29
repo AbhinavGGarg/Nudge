@@ -1,6 +1,6 @@
 const tabSessions = new Map();
 
-const LIVE_RESULTS_URL = "https://nudge-frontend-ten.vercel.app";
+const LIVE_RESULTS_URL = "https://nudge-frontend-ten.vercel.app/live-results";
 const BRAND_NAME = "Tether";
 const STORAGE_TETHER_ENABLED_KEY = "tether_enabled";
 const STRICT_INACTIVITY_MS = 60 * 1000;

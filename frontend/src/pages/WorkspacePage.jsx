@@ -70,6 +70,17 @@ function WorkspacePage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!sessionId || typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem("tether_last_session_id", sessionId);
+    } catch {
+      // Ignore storage access failures.
+    }
+  }, [sessionId]);
+
   const [context, setContext] = useState({
     domain: window.location.hostname,
     category: "unknown",

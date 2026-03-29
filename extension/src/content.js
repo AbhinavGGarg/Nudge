@@ -1,7 +1,7 @@
 const NUDGE_TAG = "nudge-extension-root";
 const NUDGE_DOCK_TAG = "nudge-extension-dock";
 const BRAND_NAME = "Tether";
-const LIVE_PAGE_SOURCE_URL = "https://nudge-frontend-ten.vercel.app/";
+const LIVE_PAGE_SOURCE_URL = "https://nudge-frontend-ten.vercel.app/live-results";
 const STORAGE_TETHER_ENABLED_KEY = "tether_enabled";
 const BLOCKED_MONITOR_PAGES = [
   { host: "accounts.google.com", pathPrefix: "/v3/signin" },
@@ -855,13 +855,40 @@ function renderDock() {
     <div style="margin-top:8px;color:#bfdbfe">${escapeHtml(detailedSummary)}</div>
     <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(148,163,184,0.25)">
       <div style="font-weight:700;color:#e2e8f0">Live Page Source</div>
-      <div style="color:#93c5fd;word-break:break-all;margin-top:2px">${escapeHtml(LIVE_PAGE_SOURCE_URL)}</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px">
+        <a
+          href="${escapeHtml(LIVE_PAGE_SOURCE_URL)}"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="color:#93c5fd;word-break:break-all;text-decoration:underline"
+        >
+          ${escapeHtml(LIVE_PAGE_SOURCE_URL)}
+        </a>
+        <button
+          type="button"
+          data-nudge-copy-live-url="true"
+          style="background:rgba(14,165,233,0.18);color:#bae6fd;border:1px solid rgba(14,165,233,0.4);border-radius:8px;padding:2px 8px;cursor:pointer;font-size:11px"
+        >
+          Copy
+        </button>
+      </div>
       <div style="color:#cbd5e1;margin-top:4px">${escapeHtml(contextSnapshot.message)}</div>
     </div>
     <div style="margin-top:8px;color:#94a3b8">
       ${BRAND_NAME} interventions appear automatically after ${Math.round(getInactivityThresholdMs() / 1000)}s inactivity on this current site.
     </div>
   `;
+
+  const copyLiveUrlButton = dockPanel.querySelector("[data-nudge-copy-live-url='true']");
+  if (copyLiveUrlButton) {
+    copyLiveUrlButton.addEventListener("click", async () => {
+      const copied = await copyToClipboard(LIVE_PAGE_SOURCE_URL);
+      lastActionNote = copied
+        ? "Live results link copied."
+        : "Could not copy automatically. Select the link and copy.";
+      renderDock();
+    });
+  }
 }
 
 function createCenteredPopup() {
@@ -1219,4 +1246,31 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+async function copyToClipboard(value) {
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Fall back below.
+  }
+
+  try {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    area.style.pointerEvents = "none";
+    document.body.appendChild(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    return copied;
+  } catch {
+    return false;
+  }
 }

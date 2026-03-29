@@ -24,6 +24,17 @@ function DashboardPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!sessionId || typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem("tether_last_session_id", sessionId);
+    } catch {
+      // Ignore storage access failures.
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadSummary() {
