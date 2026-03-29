@@ -53,6 +53,8 @@ let isTabActiveByBackground = document.visibilityState === "visible" && document
 let hasUserInteracted = false;
 let lastMouseActivityMessageAt = 0;
 let extensionContextInvalidated = false;
+let alertAudioContext = null;
+let alertAudioPrimed = false;
 let interruptionEvents = [];
 let interruptionStats = {
   lostFocusCount: 0,
@@ -325,40 +327,53 @@ function playSoftAlert(issueId) {
   lastAlertedIssueId = issueId;
 
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) {
+    const ctx = getAlertAudioContext();
+    if (!ctx) {
       return;
     }
 
-    const ctx = new AudioCtx();
     if (ctx.state === "suspended") {
       ctx.resume().catch(() => {});
     }
 
-    const now = ctx.currentTime;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(0.03, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-    gain.connect(ctx.destination);
+    const playTone = () => {
+      const now = ctx.currentTime + 0.01;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.06, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+      gain.connect(ctx.destination);
 
-    const tone1 = ctx.createOscillator();
-    tone1.type = "triangle";
-    tone1.frequency.setValueAtTime(660, now);
-    tone1.connect(gain);
-    tone1.start(now);
-    tone1.stop(now + 0.11);
+      const tone1 = ctx.createOscillator();
+      tone1.type = "triangle";
+      tone1.frequency.setValueAtTime(740, now);
+      tone1.connect(gain);
+      tone1.start(now);
+      tone1.stop(now + 0.12);
 
-    const tone2 = ctx.createOscillator();
-    tone2.type = "triangle";
-    tone2.frequency.setValueAtTime(550, now + 0.12);
-    tone2.connect(gain);
-    tone2.start(now + 0.12);
-    tone2.stop(now + 0.22);
+      const tone2 = ctx.createOscillator();
+      tone2.type = "triangle";
+      tone2.frequency.setValueAtTime(620, now + 0.13);
+      tone2.connect(gain);
+      tone2.start(now + 0.13);
+      tone2.stop(now + 0.26);
+    };
 
+    if (ctx.state === "running") {
+      playTone();
+      return;
+    }
+
+    // If the browser resumes a tick later, retry once quickly.
     window.setTimeout(() => {
-      ctx.close().catch(() => {});
-    }, 350);
+      try {
+        if (ctx.state === "running") {
+          playTone();
+        }
+      } catch {
+        // Best-effort alert only.
+      }
+    }, 120);
   } catch {
     // Soft alert is best-effort only.
   }
@@ -368,6 +383,9 @@ function onMouseMove(event) {
   if (!event.isTrusted) {
     return;
   }
+  if (!alertAudioPrimed) {
+    primeAlertAudio();
+  }
   registerActivity("mousemove");
 }
 
@@ -375,12 +393,18 @@ function onClick(event) {
   if (!event.isTrusted) {
     return;
   }
+  if (!alertAudioPrimed) {
+    primeAlertAudio();
+  }
   registerActivity("click");
 }
 
 function onKeyDown(event) {
   if (!event.isTrusted) {
     return;
+  }
+  if (!alertAudioPrimed) {
+    primeAlertAudio();
   }
 
   registerActivity("keydown");
@@ -665,6 +689,36 @@ function safeRuntimeSendMessage(payload, callback) {
     });
   } catch (error) {
     handleExtensionContextError(error);
+  }
+}
+
+function getAlertAudioContext() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) {
+      return null;
+    }
+    if (!alertAudioContext || alertAudioContext.state === "closed") {
+      alertAudioContext = new AudioCtx();
+    }
+    return alertAudioContext;
+  } catch {
+    return null;
+  }
+}
+
+function primeAlertAudio() {
+  try {
+    const ctx = getAlertAudioContext();
+    if (!ctx) {
+      return;
+    }
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    alertAudioPrimed = true;
+  } catch {
+    // Ignore.
   }
 }
 
