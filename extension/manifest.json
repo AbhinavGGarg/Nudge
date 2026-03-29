@@ -3,7 +3,7 @@
   "name": "Tether Live Copilot",
   "version": "0.2.0",
   "description": "Tether real-time behavioral intervention overlay across websites.",
-  "permissions": ["storage", "tabs", "activeTab", "notifications"],
+  "permissions": ["storage", "tabs", "activeTab", "notifications", "scripting"],
   "icons": {
     "128": "icons/nudge-128.png"
   },

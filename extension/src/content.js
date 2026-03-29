@@ -49,6 +49,9 @@ let inactivityIntervalId = null;
 let metricsIntervalId = null;
 let uiPresenceIntervalId = null;
 let lastAlertedIssueId = null;
+let isTabActiveByBackground = false;
+let hasUserInteracted = false;
+let lastMouseActivityMessageAt = 0;
 let interruptionEvents = [];
 let interruptionStats = {
   lostFocusCount: 0,
@@ -60,6 +63,11 @@ let interruptionStats = {
 boot();
 
 function boot() {
+  if (globalThis.__TETHER_CONTENT_BOOTED__) {
+    return;
+  }
+  globalThis.__TETHER_CONTENT_BOOTED__ = true;
+
   if (shouldSkipMonitoringPage(window.location)) {
     return;
   }
@@ -77,9 +85,34 @@ function boot() {
       return;
     }
 
-    // Ignore remote intervention templates here; strict inactivity is local and deterministic.
+    if (message.type === "NUDGE_PING") {
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.type === "NUDGE_SET_TAB_ACTIVE") {
+      isTabActiveByBackground = Boolean(message.active);
+      if (!isTabActiveByBackground) {
+        issueActive = false;
+        currentIssue = null;
+        hidePopup();
+      }
+      renderDock();
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message.type === "NUDGE_INTERVENTION") {
       sendResponse({ ok: true, ignored: true });
+      return;
+    }
+
+    if (message.type === "NUDGE_HIDE_ISSUE") {
+      issueActive = false;
+      currentIssue = null;
+      hidePopup();
+      renderDock();
+      sendResponse({ ok: true });
     }
   });
 
@@ -87,6 +120,21 @@ function boot() {
     const enabled = result?.[STORAGE_TETHER_ENABLED_KEY] !== false;
     applyTetherPower(enabled);
   });
+
+  chrome.runtime.sendMessage(
+    {
+      type: "NUDGE_TAB_READY",
+      url: window.location.href,
+      title: document.title
+    },
+    (response) => {
+      if (response && typeof response.active === "boolean") {
+        isTabActiveByBackground = response.active;
+        renderDock();
+      }
+      void chrome.runtime?.lastError;
+    }
+  );
 }
 
 function applyTetherPower(enabled) {
@@ -102,6 +150,7 @@ function applyTetherPower(enabled) {
     lockInRemainingSec = 0;
     issueActive = false;
     currentIssue = null;
+    hasUserInteracted = false;
     lastAlertedIssueId = null;
     lastActionNote = "Tether is off.";
     hidePopup();
@@ -121,6 +170,20 @@ function applyTetherPower(enabled) {
   if (!document.getElementById(NUDGE_DOCK_TAG)) {
     createDock();
   }
+  chrome.runtime.sendMessage(
+    {
+      type: "NUDGE_TAB_READY",
+      url: window.location.href,
+      title: document.title
+    },
+    (response) => {
+      if (response && typeof response.active === "boolean") {
+        isTabActiveByBackground = response.active;
+      }
+      void chrome.runtime?.lastError;
+      renderDock();
+    }
+  );
   renderDock();
 }
 
@@ -262,14 +325,14 @@ function onMouseMove(event) {
   if (!event.isTrusted) {
     return;
   }
-  registerActivity();
+  registerActivity("mousemove");
 }
 
 function onClick(event) {
   if (!event.isTrusted) {
     return;
   }
-  registerActivity();
+  registerActivity("click");
 }
 
 function onKeyDown(event) {
@@ -277,7 +340,7 @@ function onKeyDown(event) {
     return;
   }
 
-  registerActivity();
+  registerActivity("keydown");
 
   if (isSensitiveTarget(event.target)) {
     return;
@@ -313,7 +376,6 @@ function onInput(event) {
 
   const now = Date.now();
   lastInputAt = now;
-  registerActivity(false);
 
   const text = String(extractWorkingText() || "");
   if (text.length > previousText.length) {
@@ -338,17 +400,50 @@ function onScroll() {
 function onVisibilityChange() {
   if (document.visibilityState === "hidden") {
     tabSwitchesDelta += 1;
+    chrome.runtime.sendMessage(
+      {
+        type: "NUDGE_ACTIVITY",
+        eventType: "tab_hidden",
+        ts: Date.now(),
+        keystrokesDelta: 0,
+        url: window.location.href,
+        title: document.title
+      },
+      () => {
+        void chrome.runtime?.lastError;
+      }
+    );
   }
 }
 
-function registerActivity(clearIssue = true) {
+function registerActivity(eventType = "interaction", clearIssue = true) {
   if (!tetherEnabled) {
     return;
   }
   const now = Date.now();
   lastActivityTime = now;
   lastInteractionAt = now;
+  hasUserInteracted = true;
   void clearIssue;
+
+  if (eventType !== "mousemove" || now - lastMouseActivityMessageAt >= 250) {
+    if (eventType === "mousemove") {
+      lastMouseActivityMessageAt = now;
+    }
+    chrome.runtime.sendMessage(
+      {
+        type: "NUDGE_ACTIVITY",
+        eventType,
+        ts: now,
+        keystrokesDelta: eventType === "keydown" ? 1 : 0,
+        url: window.location.href,
+        title: document.title
+      },
+      () => {
+        void chrome.runtime?.lastError;
+      }
+    );
+  }
 
   renderDock();
 }
@@ -363,12 +458,17 @@ function checkInactivity() {
     return;
   }
 
-  if (!isCurrentPageActive()) {
+  if (!isTabActiveByBackground || !isCurrentPageActive()) {
     // Pause inactivity tracking while this tab is not active/focused.
     const now = Date.now();
     lastActivityTime = now;
     lastInteractionAt = now;
     hidePopup();
+    renderDock();
+    return;
+  }
+
+  if (!hasUserInteracted) {
     renderDock();
     return;
   }
@@ -665,7 +765,7 @@ function renderPopup() {
     return;
   }
 
-  if (!isCurrentPageActive()) {
+  if (!isCurrentPageActive() || !isTabActiveByBackground) {
     hidePopup();
     return;
   }
@@ -781,9 +881,9 @@ function ensureUiPresence() {
     createCenteredPopup();
   }
   renderDock();
-  if (issueActive && isCurrentPageActive()) {
+  if (issueActive && isCurrentPageActive() && isTabActiveByBackground) {
     renderPopup();
-  } else if (!isCurrentPageActive()) {
+  } else if (!isCurrentPageActive() || !isTabActiveByBackground) {
     hidePopup();
   }
 }
@@ -802,6 +902,7 @@ function resetForPageChange(nextPageKey) {
   scrollDistanceDelta = 0;
   lastScrollY = window.scrollY || 0;
   previousText = "";
+  hasUserInteracted = false;
   clearInactivityIssue();
   renderDock();
 }

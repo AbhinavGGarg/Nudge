@@ -23,6 +23,10 @@ const ACTION_SNOOZE_MS = {
   resume_task: 60000
 };
 
+let activeTabId = null;
+let activeWindowId = null;
+let previousActiveTabId = null;
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get([STORAGE_TETHER_ENABLED_KEY], (result) => {
     const nextEnabled = result[STORAGE_TETHER_ENABLED_KEY] !== false;
@@ -32,14 +36,30 @@ chrome.runtime.onInstalled.addListener(() => {
       [STORAGE_TETHER_ENABLED_KEY]: nextEnabled
     });
   });
+  void initializeActiveContext();
 });
 
+void initializeActiveContext();
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === activeTabId) {
+    activeTabId = null;
+  }
+  if (tabId === previousActiveTabId) {
+    previousActiveTabId = null;
+  }
   tabSessions.delete(tabId);
   chrome.storage.local.remove([`nudge_tab_${tabId}`]).catch(() => {});
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo?.status === "complete") {
+    await ensureContentScriptInjected(tabId);
+    if (tabId === activeTabId) {
+      await setTabActiveState(tabId, true);
+    }
+  }
+
   if (!tabSessions.has(tabId)) {
     return;
   }
@@ -72,6 +92,29 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   void persistState(tabId, session);
 });
 
+chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
+  await setActiveTabContext(tabId, windowId);
+  await ensureContentScriptInjected(tabId);
+  await setTabActiveState(tabId, true);
+});
+
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    if (activeTabId !== null) {
+      await setTabActiveState(activeTabId, false);
+    }
+    activeWindowId = null;
+    activeTabId = null;
+    return;
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, windowId });
+  if (tab?.id) {
+    await setActiveTabContext(tab.id, windowId);
+    await ensureContentScriptInjected(tab.id);
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
     return;
@@ -96,6 +139,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local.get([key], (result) => {
       sendResponse({ ok: true, state: result[key] || null });
     });
+    return true;
+  }
+
+  if (message.type === "NUDGE_ACTIVITY") {
+    handleActivityMessage(message, sender)
+      .then((payload) => sendResponse(payload))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message.type === "NUDGE_TAB_READY") {
+    const tabId = sender?.tab?.id;
+    const windowId = sender?.tab?.windowId;
+    const isActive = typeof tabId === "number" && tabId === activeTabId && windowId === activeWindowId;
+    if (typeof tabId === "number" && typeof windowId === "number" && tabId === activeTabId && windowId === activeWindowId) {
+      void setTabActiveState(tabId, true);
+    } else if (typeof tabId === "number") {
+      void setTabActiveState(tabId, false);
+    }
+    sendResponse({ ok: true, active: isActive, activeTabId, activeWindowId });
+    return true;
+  }
+
+  if (message.type === "NUDGE_PING") {
+    sendResponse({ ok: true });
     return true;
   }
 });
@@ -174,6 +242,8 @@ async function handleMetricsMessage(message, sender) {
       session.interventions.unshift(intervention);
       session.interventions = session.interventions.slice(0, 20);
       session.pendingIgnoredReminder = null;
+      session.activity.issueActive = true;
+      session.activity.lastIssueId = intervention.id;
 
       addTimeline(session, "intervention_triggered", intervention.title, intervention.what);
 
@@ -187,6 +257,10 @@ async function handleMetricsMessage(message, sender) {
         })
         .catch(() => {});
     }
+  }
+
+  if (!issue) {
+    session.activity.issueActive = false;
   }
 
   session.lastSignal = signal;
@@ -232,6 +306,8 @@ async function handleActionMessage(message, sender) {
   target.userAction = action;
   target.respondedAt = Date.now();
   target.applied = ["lock_in_2m", "refocus_timer", "break_steps", "try_new_approach", "resume_task"].includes(action);
+  session.activity.issueActive = false;
+  session.activity.lastIssueId = null;
 
   const snoozeKey = target.strategy === "inactivity_strict" ? "inactivity" : target.type;
   if (ACTION_SNOOZE_MS[action] && snoozeKey) {
@@ -292,12 +368,146 @@ async function handleActionMessage(message, sender) {
   };
 }
 
+async function handleActivityMessage(message, sender) {
+  const tabId = sender?.tab?.id;
+  if (typeof tabId !== "number") {
+    return { ok: false };
+  }
+
+  const session = ensureSession(tabId, sender?.tab?.url || "", sender?.tab?.title || "");
+  const now = numberOrZero(message.ts) || Date.now();
+  const eventType = String(message.eventType || "interaction");
+  const keyDelta = Math.max(0, numberOrZero(message.keystrokesDelta));
+
+  session.activity.lastActivityAt = now;
+  session.activity.hasInteracted = true;
+  session.activity.lastEventType = eventType;
+
+  if (eventType === "keydown") {
+    session.activity.totalKeystrokes += keyDelta > 0 ? keyDelta : 1;
+  }
+  if (eventType === "tab_hidden") {
+    session.activity.tabSwitches += 1;
+    session.aggregate.totalTabSwitches += 1;
+  }
+
+  const tabIsActive = tabId === activeTabId && sender?.tab?.windowId === activeWindowId;
+  if (tabIsActive && session.activity.issueActive) {
+    session.activity.lastActivityAt = now;
+    session.activity.issueActive = false;
+    session.activity.lastIssueId = null;
+    addTimeline(session, "activity_resumed", "Activity resumed", "Inactivity timer reset after interaction.");
+    chrome.tabs.sendMessage(tabId, { type: "NUDGE_HIDE_ISSUE" }).catch(() => {});
+  }
+
+  session.lastMetrics = {
+    ...(session.lastMetrics || {}),
+    totalKeystrokes: session.activity.totalKeystrokes,
+    tabSwitchesDelta: session.activity.tabSwitches,
+    idleDurationMs: Math.max(0, Date.now() - session.activity.lastActivityAt),
+    isPageActive: tabIsActive
+  };
+
+  session.updatedAt = Date.now();
+  await persistState(tabId, session);
+
+  return { ok: true };
+}
+
 async function getTetherEnabled() {
   try {
     const result = await chrome.storage.local.get([STORAGE_TETHER_ENABLED_KEY]);
     return result[STORAGE_TETHER_ENABLED_KEY] !== false;
   } catch {
     return true;
+  }
+}
+
+async function initializeActiveContext() {
+  try {
+    const currentWindow = await chrome.windows.getLastFocused();
+    if (!currentWindow?.id) {
+      return;
+    }
+    const [active] = await chrome.tabs.query({ active: true, windowId: currentWindow.id });
+    if (!active?.id) {
+      return;
+    }
+    await setActiveTabContext(active.id, currentWindow.id);
+    await ensureContentScriptInjected(active.id);
+    await setTabActiveState(active.id, true);
+  } catch {
+    // Best effort on startup.
+  }
+}
+
+async function setActiveTabContext(nextTabId, nextWindowId) {
+  if (typeof nextTabId !== "number" || typeof nextWindowId !== "number") {
+    return;
+  }
+
+  if (activeTabId === nextTabId && activeWindowId === nextWindowId) {
+    await setTabActiveState(nextTabId, true);
+    return;
+  }
+
+  previousActiveTabId = activeTabId;
+  if (previousActiveTabId !== null && previousActiveTabId !== nextTabId) {
+    await setTabActiveState(previousActiveTabId, false);
+  }
+
+  activeTabId = nextTabId;
+  activeWindowId = nextWindowId;
+  await setTabActiveState(nextTabId, true);
+
+  const activeSession = ensureSession(nextTabId, "", "");
+  activeSession.activity.tabSwitches += 1;
+  activeSession.lastMetrics = {
+    ...(activeSession.lastMetrics || {}),
+    tabSwitchesDelta: activeSession.activity.tabSwitches,
+    isPageActive: true
+  };
+  activeSession.updatedAt = Date.now();
+  await persistState(nextTabId, activeSession);
+}
+
+async function setTabActiveState(tabId, active) {
+  if (typeof tabId !== "number") {
+    return;
+  }
+  await chrome.tabs
+    .sendMessage(tabId, { type: "NUDGE_SET_TAB_ACTIVE", active: Boolean(active), activeTabId, activeWindowId })
+    .catch(() => {});
+}
+
+async function ensureContentScriptInjected(tabId) {
+  if (typeof tabId !== "number") {
+    return;
+  }
+
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return;
+  }
+
+  const url = String(tab?.url || "");
+  if (!/^https?:\/\//i.test(url)) {
+    return;
+  }
+
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "NUDGE_PING" });
+  } catch {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["src/content.js"]
+      });
+    } catch {
+      return;
+    }
   }
 }
 
@@ -361,6 +571,15 @@ function ensureSession(tabId, url, title) {
       totalKeystrokes: 0,
       isPageActive: false
     },
+    activity: {
+      hasInteracted: false,
+      lastActivityAt: Date.now(),
+      lastEventType: "none",
+      totalKeystrokes: 0,
+      tabSwitches: 0,
+      issueActive: false,
+      lastIssueId: null
+    },
     interruptionStats: {
       lostFocusCount: 0,
       recoveredCount: 0,
@@ -380,6 +599,7 @@ function ensureSession(tabId, url, title) {
 }
 
 function normalizeMetrics(metrics, tab) {
+  const tabIsActive = Boolean(tab?.id === activeTabId && tab?.windowId === activeWindowId);
   return {
     typingSpeed: numberOrZero(metrics.typingSpeed),
     pauseDurationMs: numberOrZero(metrics.pauseDurationMs),
@@ -399,7 +619,7 @@ function normalizeMetrics(metrics, tab) {
     url: String(metrics.url || tab?.url || ""),
     pageHost: String(metrics.pageHost || domainFromUrl(metrics.url || tab?.url || "")),
     pageKey: String(metrics.pageKey || ""),
-    isPageActive: Boolean(metrics.isPageActive),
+    isPageActive: Boolean(metrics.isPageActive) && tabIsActive,
     inactivityThresholdMs: numberOrZero(metrics.inactivityThresholdMs),
     hasVideo: Boolean(metrics.hasVideo),
     hasEditable: Boolean(metrics.hasEditable),
@@ -509,6 +729,10 @@ function detectIssue(session, metrics, context) {
     return { issue: null, diagnostics: baseDiagnostics };
   }
 
+  if (!session.activity?.hasInteracted) {
+    return { issue: null, diagnostics: baseDiagnostics };
+  }
+
   const pauseFactor = clamp(metrics.pauseDurationMs / 22000);
   const idleFactor = clamp(metrics.idleDurationMs / 45000);
   const tabFactor = clamp(metrics.tabSwitchesDelta / 3);
@@ -538,6 +762,7 @@ function detectIssue(session, metrics, context) {
   const inactivityThresholdMs = getInactivityThresholdMs(session, metrics);
   const inactivityStrict =
     metrics.isPageActive &&
+    Boolean(session.activity?.hasInteracted) &&
     metrics.pauseDurationMs >= inactivityThresholdMs &&
     metrics.idleDurationMs >= inactivityThresholdMs &&
     metrics.keystrokesDelta === 0 &&
@@ -862,6 +1087,7 @@ async function persistState(tabId, session) {
       issueCounters: session.issueCounters,
       lastSignal: session.lastSignal,
       lastMetrics: session.lastMetrics,
+      activity: session.activity,
       interventions: session.interventions,
       timeline: session.timeline,
       pendingIgnoredReminder: session.pendingIgnoredReminder,
@@ -869,7 +1095,9 @@ async function persistState(tabId, session) {
       lastInactivityNotificationAt: session.lastInactivityNotificationAt || 0,
       liveResultsUrl: LIVE_RESULTS_URL,
       interruptionStats: session.interruptionStats,
-      detailedSummary
+      detailedSummary,
+      activeTabId,
+      activeWindowId
     },
     nudge_last_tab: tabId,
     nudge_last_update: Date.now()
