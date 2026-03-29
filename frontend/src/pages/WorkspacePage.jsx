@@ -6,7 +6,6 @@ const GRADE_OPTIONS = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F"];
 const GRADE_SLOT_COUNT = 6;
 const ASSESSMENT_SLOT_COUNT = 3;
 const RISK_LEVEL_ORDER = { Low: 1, Moderate: 2, High: 3 };
-const GITHUB_REPO_URL = "https://github.com/AbhinavGGarg/Tether";
 const GITHUB_ZIP_URL = "https://github.com/AbhinavGGarg/Tether/archive/refs/heads/main.zip";
 const EXTENSION_POWER_BRIDGE_EVENT = "TETHER_EXTENSION_POWER";
 const REMINDER_DELAYS_MS = [0, 3 * 60 * 1000, 8 * 60 * 1000];
@@ -793,24 +792,47 @@ function WorkspacePage() {
 
     if (parsed.grade) {
       setGradesInput((prev) => {
+        const parsedGrades = Array.isArray(parsed.grades) && parsed.grades.length > 0 ? parsed.grades : [parsed.grade];
         const hasEmptySlots = prev.courseGrades.some((entry) => !entry.grade);
+        let appliedCount = 0;
+        let nextParsedIndex = 0;
+
+        const nextCourseGrades = prev.courseGrades.map((entry) => {
+          if (entry.grade) {
+            return entry;
+          }
+          const picked = parsedGrades[Math.min(nextParsedIndex, parsedGrades.length - 1)] || parsed.grade;
+          if (!picked) {
+            return entry;
+          }
+          appliedCount += 1;
+          nextParsedIndex += 1;
+          return { ...entry, grade: picked };
+        });
 
         return {
           ...prev,
           currentGrade: parsed.grade,
-          courseGrades: prev.courseGrades.map((entry, index) => {
-            if (hasEmptySlots) {
-              return entry.grade ? entry : { ...entry, grade: parsed.grade };
-            }
-            return index === 0 ? { ...entry, grade: parsed.grade } : entry;
-          })
+          courseGrades: nextCourseGrades
         };
       });
-      setPortalStatus(
-        `Parsed grade signal: ${parsed.grade}. Applied to ${
-          gradesInput.courseGrades.some((entry) => !entry.grade) ? "all empty courses" : "Course 1"
-        }.`
-      );
+
+      const parsedCount = Array.isArray(parsed.grades) ? parsed.grades.length : 1;
+      const emptySlots = gradesInput.courseGrades.filter((entry) => !entry.grade).length;
+      if (emptySlots === 0) {
+        setPortalStatus(`Parsed grade signal: ${parsed.grade}. No empty course slots left, so your entered grades were kept.`);
+      } else {
+        setPortalStatus(
+          `Parsed ${parsedCount} grade signal${parsedCount > 1 ? "s" : ""}: ${
+            parsedCount > 1 ? parsed.grades.join(", ") : parsed.grade
+          }. Applied to ${Math.min(emptySlots, Math.max(1, parsedCount))} empty course slot${Math.min(
+            emptySlots,
+            Math.max(1, parsedCount)
+          ) > 1
+            ? "s"
+            : ""}.`
+        );
+      }
       addRiskTimelineEvent("grade_parsed", `Portal grade parsed (${parsed.grade})`, parsed.source);
     } else {
       setPortalStatus(parsed.message);
@@ -1069,9 +1091,6 @@ function WorkspacePage() {
               <div className="action-row landing-install-actions">
                 <a className="btn btn-primary" href={GITHUB_ZIP_URL} target="_blank" rel="noreferrer">
                   Download Extension ZIP
-                </a>
-                <a className="btn btn-ghost" href={GITHUB_REPO_URL} target="_blank" rel="noreferrer">
-                  View GitHub Repo
                 </a>
               </div>
               <p className="monitor-note">
@@ -1515,9 +1534,12 @@ function computeGradesRiskState({
       : gradeToRisk(fallbackGrade);
   const coveragePenalty = (1 - coverageRatio) * 0.16;
   const profileRisk = clamp01(gradeRisk + coveragePenalty);
+  const averageGrade = percentToLetterGrade(
+    gradeSamples.reduce((sum, grade) => sum + gradeToPercentMidpoint(grade), 0) / Math.max(1, gradeSamples.length)
+  );
   const gradeLabel =
     gradedCount > 0
-      ? `${gradedCount}/${GRADE_SLOT_COUNT} courses graded`
+      ? `${gradedCount}/${GRADE_SLOT_COUNT} courses graded (avg ${averageGrade})`
       : `baseline ${fallbackGrade} across all courses`;
   const behaviorRisk = Math.max(
     signal.procrastinationScore || 0,
@@ -1537,6 +1559,8 @@ function computeGradesRiskState({
   const activityPenalty = clamp01(1 - activitySignal);
   const assessmentTarget = formatAssessmentTargets(upcomingAssessments);
   const upcomingCount = countUpcomingAssessments(upcomingAssessments);
+  const nearestAssessment = getNearestUpcomingAssessment(upcomingAssessments);
+  const nearestAssessmentLine = getNearestAssessmentLine(nearestAssessment);
   const schedulePressure = upcomingCount >= 2 ? 0.06 : upcomingCount === 1 ? 0.03 : 0;
 
   const rawScore =
@@ -1561,16 +1585,16 @@ function computeGradesRiskState({
   const explanation = `Risk model sees ${gradeLabel}, ${behaviorRiskPct}% behavior drift, focus score ${focusScoreRounded}%, idle window ${idleSeconds}s, and ${repeatedActionCount} repeated actions. Combined signal indicates ${level.toLowerCase()} academic risk.`;
   const consequence =
     level === "Low"
-      ? `You are on track, but repeated inactivity spikes can still reduce retention before ${assessmentTarget}.`
+      ? `You are on track, but repeated inactivity spikes can still reduce retention before ${assessmentTarget}.${nearestAssessmentLine ? ` ${nearestAssessmentLine}` : ""}`
       : level === "Moderate"
-        ? `Retention may drop and prep quality can become uneven. At this pace, some topics may remain only partially reviewed before ${assessmentTarget}.`
-        : `High risk trend: key topics are likely to remain under-practiced before ${assessmentTarget}, which can directly affect assessment outcomes.`;
+        ? `Retention may drop and prep quality can become uneven. At this pace, some topics may remain only partially reviewed before ${assessmentTarget}.${nearestAssessmentLine ? ` ${nearestAssessmentLine}` : ""}`
+        : `High risk trend: key topics are likely to remain under-practiced before ${assessmentTarget}, which can directly affect assessment outcomes.${nearestAssessmentLine ? ` ${nearestAssessmentLine}` : ""}`;
   const recommendation =
     level === "Low"
       ? "Run 2 short focus blocks (10m each), log one takeaway per block, and avoid non-task tab switches."
       : level === "Moderate"
-        ? `Start a 2-minute lock-in now, then complete one targeted review block for ${assessmentTarget}.`
-        : `Start recovery now: 2-minute lock-in, then 20-minute focused review on highest-weight topics before ${assessmentTarget}.`;
+        ? `Start a 2-minute lock-in now, then complete one targeted review block for ${assessmentTarget}.${nearestAssessmentLine ? " You are close to assessment time, so consistency matters right now." : ""}`
+        : `Start recovery now: 2-minute lock-in, then 20-minute focused review on highest-weight topics before ${assessmentTarget}.${nearestAssessmentLine ? " Protect this next window and avoid distractions." : ""}`;
 
   const drivers = [
     `Behavior drift: ${behaviorRiskPct}%`,
@@ -1680,7 +1704,7 @@ function countUpcomingAssessments(assessments) {
 }
 
 function buildAssessmentUrgencyLine(assessments, issueType) {
-  if (issueType !== "distraction") {
+  if (!["distraction", "inactivity", "procrastination"].includes(issueType)) {
     return "";
   }
 
@@ -1691,13 +1715,30 @@ function buildAssessmentUrgencyLine(assessments, issueType) {
 
   const target = nearest.name || "your assessment";
   if (nearest.daysUntil === 0) {
-    return `You have ${target} today. Stop getting distracted and study for it now.`;
+    return `Friendly reminder: ${target} is today. Let’s lock in for 2 minutes right now.`;
   }
   if (nearest.daysUntil === 1) {
-    return `You have ${target} tomorrow. Stop getting distracted and study for it now.`;
+    return `Friendly reminder: ${target} is tomorrow. Try a quick lock-in now to stay ahead.`;
   }
   if (nearest.daysUntil <= 3) {
-    return `You have ${target} in ${nearest.daysUntil} days. Stay focused to finish prep on time.`;
+    return `You have ${target} in ${nearest.daysUntil} days. Staying focused now will make prep easier.`;
+  }
+  return "";
+}
+
+function getNearestAssessmentLine(nearestAssessment) {
+  if (!nearestAssessment) {
+    return "";
+  }
+  const target = nearestAssessment.name || "Your upcoming assessment";
+  if (nearestAssessment.daysUntil === 0) {
+    return `${target} is today. Keep this study block protected.`;
+  }
+  if (nearestAssessment.daysUntil === 1) {
+    return `${target} is tomorrow. This is the right time to lock in and review.`;
+  }
+  if (nearestAssessment.daysUntil <= 3) {
+    return `${target} is in ${nearestAssessment.daysUntil} days, so consistency right now has high impact.`;
   }
   return "";
 }
@@ -1793,6 +1834,7 @@ function parseGradeFromPortalLink(link, fallbackGrade = "B+") {
   if (!clean) {
     return {
       grade: null,
+      grades: [],
       source: "No link provided.",
       message: "Add a grade portal link to simulate parsing."
     };
@@ -1812,12 +1854,31 @@ function parseGradeFromPortalLink(link, fallbackGrade = "B+") {
 
   try {
     const parsed = new URL(clean);
+    const gradeSignals = [];
+
+    for (const [key, value] of parsed.searchParams.entries()) {
+      const normalizedValue = normalizeGradeToken(value);
+      if (normalizedValue && /grade|score|percent|pct|letter|g/i.test(key)) {
+        gradeSignals.push(normalizedValue);
+      }
+    }
+
+    if (gradeSignals.length > 0) {
+      return {
+        grade: gradeSignals[0],
+        grades: gradeSignals.slice(0, GRADE_SLOT_COUNT),
+        source: "Grade tokens found in URL query params.",
+        message: `Parsed grade signals: ${gradeSignals.slice(0, GRADE_SLOT_COUNT).join(", ")}`
+      };
+    }
+
     for (const key of tokenKeys) {
       const rawToken = parsed.searchParams.get(key);
       const normalized = normalizeGradeToken(rawToken);
       if (normalized) {
         return {
           grade: normalized,
+          grades: [normalized],
           source: `Grade token found in query param "${key}".`,
           message: `Parsed grade signal: ${normalized}`
         };
@@ -1832,6 +1893,7 @@ function parseGradeFromPortalLink(link, fallbackGrade = "B+") {
       if (normalized) {
         return {
           grade: normalized,
+          grades: [normalized],
           source: "Grade token found in URL path/hash.",
           message: `Parsed grade signal: ${normalized}`
         };
@@ -1847,6 +1909,7 @@ function parseGradeFromPortalLink(link, fallbackGrade = "B+") {
     if (normalized) {
       return {
         grade: normalized,
+        grades: [normalized],
         source: "Grade token found in raw link text.",
         message: `Parsed grade signal: ${normalized}`
       };
@@ -1856,13 +1919,15 @@ function parseGradeFromPortalLink(link, fallbackGrade = "B+") {
   if (/grade|report|portal|progress|classroom|canvas|blackboard|schoology/i.test(clean)) {
     return {
       grade: fallbackGrade,
+      grades: [fallbackGrade],
       source: "Portal URL detected without explicit grade token.",
-      message: `Portal detected. Using grade profile baseline (${fallbackGrade}) for empty course slots.`
+      message: `Portal detected, but no explicit grade token found. Keeping your entered grades and using baseline ${fallbackGrade} only for empty slots.`
     };
   }
 
   return {
     grade: null,
+    grades: [],
     source: "No grade token found in link.",
     message: "Could not parse a grade from this link. Add grade in URL (e.g. ?grade=B+) or keep manual grade."
   };
@@ -1937,6 +2002,22 @@ function percentToLetterGrade(percent) {
     return "D";
   }
   return "F";
+}
+
+function gradeToPercentMidpoint(grade) {
+  const map = {
+    A: 96,
+    "A-": 91,
+    "B+": 88,
+    B: 85,
+    "B-": 81,
+    "C+": 78,
+    C: 74,
+    "C-": 71,
+    D: 66,
+    F: 50
+  };
+  return map[grade] ?? 81;
 }
 
 function safeDecode(value) {
