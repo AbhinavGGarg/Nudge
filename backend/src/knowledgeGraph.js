@@ -57,7 +57,7 @@ const INTERVENTION_LIBRARY = {
     },
     inactivity: {
       title: "Distraction / Inactivity",
-      message: "You have been inactive for 60 seconds.",
+      message: "You have been inactive for 30 seconds.",
       nextAction: "Get back in for 2 minutes to regain momentum.",
       actionPayloads: SHARED_ACTION_PAYLOADS
     }
@@ -77,7 +77,7 @@ const INTERVENTION_LIBRARY = {
     },
     inactivity: {
       title: "Distraction / Inactivity",
-      message: "You have been inactive for 60 seconds.",
+      message: "You have been inactive for 30 seconds.",
       nextAction: "Get back in for 2 minutes to regain momentum.",
       actionPayloads: SHARED_ACTION_PAYLOADS
     }
@@ -97,7 +97,7 @@ const INTERVENTION_LIBRARY = {
     },
     inactivity: {
       title: "Distraction / Inactivity",
-      message: "You have been inactive for 60 seconds.",
+      message: "You have been inactive for 30 seconds.",
       nextAction: "Get back in for 2 minutes to regain momentum.",
       actionPayloads: SHARED_ACTION_PAYLOADS
     }
@@ -117,7 +117,7 @@ const INTERVENTION_LIBRARY = {
     },
     inactivity: {
       title: "Distraction / Inactivity",
-      message: "You have been inactive for 60 seconds.",
+      message: "You have been inactive for 30 seconds.",
       nextAction: "Get back in for 2 minutes to regain momentum.",
       actionPayloads: SHARED_ACTION_PAYLOADS
     }
@@ -137,7 +137,7 @@ const INTERVENTION_LIBRARY = {
     },
     inactivity: {
       title: "Distraction / Inactivity",
-      message: "You have been inactive for 60 seconds.",
+      message: "You have been inactive for 30 seconds.",
       nextAction: "Get back in for 2 minutes to regain momentum.",
       actionPayloads: SHARED_ACTION_PAYLOADS
     }

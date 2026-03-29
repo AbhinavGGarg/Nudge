@@ -1,6 +1,6 @@
 import { CONTEXT_PROFILES } from "./knowledgeGraph.js";
 
-const STRICT_INACTIVITY_MS = 60 * 1000;
+const STRICT_INACTIVITY_MS = 30 * 1000;
 const SECONDARY_INACTIVITY_MS = 150 * 1000;
 
 function normalizeMetrics(raw = {}) {

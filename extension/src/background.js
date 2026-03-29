@@ -3,7 +3,7 @@ const tabSessions = new Map();
 const LIVE_RESULTS_URL = "https://nudge-frontend-ten.vercel.app/live-results";
 const BRAND_NAME = "Tether";
 const STORAGE_TETHER_ENABLED_KEY = "tether_enabled";
-const STRICT_INACTIVITY_MS = 60 * 1000;
+const STRICT_INACTIVITY_MS = 30 * 1000;
 const SECONDARY_INACTIVITY_MS = 150 * 1000;
 const INACTIVITY_NOTIFICATION_COOLDOWN_MS = 90 * 1000;
 
@@ -961,7 +961,7 @@ function canEmitIntervention(session, issue) {
 
 function buildIntervention(issue, context, diagnostics) {
   if (issue.strategy === "inactivity_strict") {
-    const inactivitySeconds = Math.round(numberOrZero(issue.inactivityThresholdMs) / 1000) || 60;
+    const inactivitySeconds = Math.round(numberOrZero(issue.inactivityThresholdMs) / 1000) || 30;
     const interruptionMessage = issue.interruptionDetected
       ? "You’ve been interrupted multiple times."
       : `You've been inactive for ${inactivitySeconds} seconds. You may be losing focus.`;
@@ -1005,7 +1005,7 @@ function buildIntervention(issue, context, diagnostics) {
       title: "Procrastination Pattern Detected",
       what: "You switched contexts multiple times recently.",
       why: "Frequent context switching often signals avoidance of the current task.",
-      nextAction: "Pick one concrete outcome and stay on it for 60 seconds."
+      nextAction: "Pick one concrete outcome and stay on it for 30 seconds."
     },
     distraction: {
       title: "Distraction Detected",

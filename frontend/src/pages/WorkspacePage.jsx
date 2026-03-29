@@ -1082,7 +1082,7 @@ function WorkspacePage() {
                 </div>
                 <div>
                   <strong>2. Detect</strong>
-                  <p>Classify risk patterns and trigger strict inactivity detection at 60 seconds.</p>
+                  <p>Classify risk patterns and trigger strict inactivity detection at 30 seconds.</p>
                 </div>
                 <div>
                   <strong>3. Intervene</strong>
@@ -1101,7 +1101,7 @@ function WorkspacePage() {
                 <li>Open Chrome and go to `chrome://extensions`.</li>
                 <li>Turn on Developer mode, then click Load unpacked.</li>
                 <li>Select the `extension` folder from the downloaded repo.</li>
-                <li>Open any site, then stay inactive for 60 seconds to trigger Tether.</li>
+                <li>Open any site, then stay inactive for 30 seconds to trigger Tether.</li>
               </ol>
               <div className="action-row landing-install-actions">
                 <a className="btn btn-primary" href={GITHUB_ZIP_URL} target="_blank" rel="noreferrer">

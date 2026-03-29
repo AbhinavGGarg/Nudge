@@ -9,7 +9,7 @@ const BLOCKED_MONITOR_PAGES = [
   { host: "accounts.google.com", pathPrefix: "/signin" }
 ];
 
-const STRICT_INACTIVITY_MS = 60 * 1000;
+const STRICT_INACTIVITY_MS = 30 * 1000;
 const SECONDARY_INACTIVITY_MS = 150 * 1000;
 
 let sessionStartedAt = Date.now();
