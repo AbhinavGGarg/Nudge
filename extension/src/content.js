@@ -49,7 +49,7 @@ let inactivityIntervalId = null;
 let metricsIntervalId = null;
 let uiPresenceIntervalId = null;
 let lastAlertedIssueId = null;
-let isTabActiveByBackground = false;
+let isTabActiveByBackground = document.visibilityState === "visible" && document.hasFocus();
 let hasUserInteracted = false;
 let lastMouseActivityMessageAt = 0;
 let interruptionEvents = [];
@@ -100,6 +100,12 @@ function boot() {
         hidePopup();
       }
       renderDock();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.type === "NUDGE_TETHER_POWER") {
+      applyTetherPower(message.enabled !== false);
       sendResponse({ ok: true });
       return;
     }

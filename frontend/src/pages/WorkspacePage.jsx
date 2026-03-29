@@ -1370,6 +1370,11 @@ function WorkspacePage() {
                   <p>
                     <strong>What:</strong> {riskState.explanation}
                   </p>
+                  {riskState.drivers?.length ? (
+                    <p>
+                      <strong>Key drivers:</strong> {riskState.drivers.join(" • ")}
+                    </p>
+                  ) : null}
                   <p>
                     <strong>If this continues:</strong> {riskState.consequence}
                   </p>
@@ -1494,8 +1499,12 @@ function computeGradesRiskState({
     signal.procrastinationScore || 0,
     signal.distractionScore || 0
   );
+  const behaviorRiskPct = Math.round(behaviorRisk * 100);
   const wastedMinutes = estimateWastedMinutes(signal, telemetry);
   const wastedRisk = clamp01(wastedMinutes / 18);
+  const idleSeconds = Math.round((telemetry.idleDurationMs || 0) / 1000);
+  const repeatedActionCount = Number(telemetry.repeatedActions || 0);
+  const focusScoreRounded = Math.round(Number(signal.focusScore || 0));
 
   const activitySignal = clamp01(
     (Math.min(1.2, telemetry.typingSpeed || 0) / 1.2) * 0.55 +
@@ -1517,27 +1526,35 @@ function computeGradesRiskState({
     level = "Moderate";
   }
 
-  let predictedOutcome = `Your current pattern supports steady performance with ${gradeLabel}.`;
+  let predictedOutcome = `Current projection: with ${gradeLabel}, your performance can stay stable if you keep activity consistent and avoid long idle windows.`;
   if (level === "Moderate") {
-    predictedOutcome = `Based on your full grade profile (${gradeLabel}), continued interruptions may lower performance across upcoming checks.`;
+    predictedOutcome = `Current projection: based on ${gradeLabel} plus behavior drift (${behaviorRiskPct}% risk), continued interruptions may lower quiz/test performance across upcoming checks.`;
   }
   if (level === "High") {
-    predictedOutcome = `Your current pace suggests incomplete coverage before ${assessmentTarget} unless focus stabilizes.`;
+    predictedOutcome = `Current projection: your pace suggests incomplete coverage before ${assessmentTarget}. Without a recovery sprint, retention and completion quality are likely to drop.`;
   }
 
-  const explanation = `Current grade signal (${gradeLabel}) plus ${context.activityType} behavior indicates ${level.toLowerCase()} academic risk.`;
+  const explanation = `Risk model sees ${gradeLabel}, ${behaviorRiskPct}% behavior drift, focus score ${focusScoreRounded}%, idle window ${idleSeconds}s, and ${repeatedActionCount} repeated actions. Combined signal indicates ${level.toLowerCase()} academic risk.`;
   const consequence =
     level === "Low"
-      ? "You are on track if consistency continues."
+      ? `You are on track, but repeated inactivity spikes can still reduce retention before ${assessmentTarget}.`
       : level === "Moderate"
-        ? "Retention may drop and prep quality may become uneven."
-        : "Key topics may remain under-practiced before your next graded check.";
+        ? `Retention may drop and prep quality can become uneven. At this pace, some topics may remain only partially reviewed before ${assessmentTarget}.`
+        : `High risk trend: key topics are likely to remain under-practiced before ${assessmentTarget}, which can directly affect assessment outcomes.`;
   const recommendation =
     level === "Low"
-      ? "Keep short focus blocks and checkpoint one takeaway each cycle."
+      ? "Run 2 short focus blocks (10m each), log one takeaway per block, and avoid non-task tab switches."
       : level === "Moderate"
-        ? "Use a focus sprint, then complete one targeted review block."
-        : "Start a recovery plan now and prioritize high-impact topics first.";
+        ? `Start a 2-minute lock-in now, then complete one targeted review block for ${assessmentTarget}.`
+        : `Start recovery now: 2-minute lock-in, then 20-minute focused review on highest-weight topics before ${assessmentTarget}.`;
+
+  const drivers = [
+    `Behavior drift: ${behaviorRiskPct}%`,
+    `Focus score: ${focusScoreRounded}%`,
+    `Idle duration: ${idleSeconds}s`,
+    `Repeated actions: ${repeatedActionCount}`,
+    `Grade coverage: ${Math.round(coverageRatio * 100)}%`
+  ];
 
   return {
     score,
@@ -1549,7 +1566,8 @@ function computeGradesRiskState({
     predictedOutcome,
     explanation,
     consequence,
-    recommendation
+    recommendation,
+    drivers
   };
 }
 

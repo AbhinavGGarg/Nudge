@@ -27,6 +27,14 @@ let activeTabId = null;
 let activeWindowId = null;
 let previousActiveTabId = null;
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes[STORAGE_TETHER_ENABLED_KEY]) {
+    return;
+  }
+  const enabled = changes[STORAGE_TETHER_ENABLED_KEY].newValue !== false;
+  void broadcastPowerState(enabled);
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get([STORAGE_TETHER_ENABLED_KEY], (result) => {
     const nextEnabled = result[STORAGE_TETHER_ENABLED_KEY] !== false;
@@ -423,6 +431,19 @@ async function getTetherEnabled() {
   }
 }
 
+async function broadcastPowerState(enabled) {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs
+      .filter((tab) => typeof tab.id === "number")
+      .map((tab) =>
+        chrome.tabs
+          .sendMessage(tab.id, { type: "NUDGE_TETHER_POWER", enabled: Boolean(enabled) })
+          .catch(() => {})
+      )
+  );
+}
+
 async function initializeActiveContext() {
   try {
     const currentWindow = await chrome.windows.getLastFocused();
@@ -498,16 +519,31 @@ async function ensureContentScriptInjected(tabId) {
   }
 
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "NUDGE_PING" });
-  } catch {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["src/content.js"]
-      });
-    } catch {
+    const [{ result: booted }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => Boolean(globalThis.__TETHER_CONTENT_BOOTED__)
+    });
+    if (booted) {
       return;
     }
+  } catch {
+    // Ignore and fallback to direct ping/inject.
+  }
+
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "NUDGE_PING" });
+    return;
+  } catch {
+    // Not injected yet.
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["src/content.js"]
+    });
+  } catch {
+    return;
   }
 }
 
